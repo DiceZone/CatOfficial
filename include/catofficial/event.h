@@ -42,8 +42,12 @@ struct MessageEvent {
     std::string groupName;
     std::string content;           // 群消息已去掉指向本机器人的 <@…> 与首尾空白
     std::vector<Mention> mentions; // 群消息的 mentions，按原顺序
-    std::string quotedMessageId;   // message_reference.message_id
-    std::string messageIndex;      // message_scene.ext 里的 msg_idx
+    std::string quotedMessageId;   // message_reference.message_id（旧格式）
+    /// 本消息的引用索引（message_scene.ext 的 msg_idx，形如 REFIDX_…）。
+    /// 引用回复时官方按它指认消息，机器人自己发的消息则在发送响应的 ext_info.ref_idx 里。
+    std::string messageIndex;
+    std::string quotedIndex;       // 被引用消息的索引（ref_msg_idx）
+    json quoted = json::object();  // 被引用消息的内容（msg_elements 第一项），可能为空
     std::string dedupKey;          // 为空表示不去重
     json data;                     // 原始 d
 };
@@ -99,6 +103,13 @@ inline std::optional<MessageEvent> parseMessage(const std::string& type, const j
     e.author = protocol::object(d, "author");
     e.content = text(d, "content");
     e.messageIndex = protocol::sceneValue(d, "msg_idx");
+    e.quotedIndex = protocol::sceneValue(d, "ref_msg_idx");
+    if (d.contains("msg_elements") && d["msg_elements"].is_array()) {
+        for (const auto& element : d["msg_elements"]) {
+            if (!element.is_object()) continue;
+            if (e.quotedIndex.empty() || protocol::text(element, "msg_idx") == e.quotedIndex) { e.quoted = element; break; }
+        }
+    }
     if (d.contains("message_reference") && d["message_reference"].is_object())
         e.quotedMessageId = text(d["message_reference"], "message_id");
 
