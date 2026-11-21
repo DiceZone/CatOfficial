@@ -89,7 +89,7 @@ export function DashboardPage() {
                   <span className="absolute -bottom-0.5 -right-0.5"><StatusDot tone={botTone(b)} /></span>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{b.runtime?.nickname || b.name}</p>
+                  <p className="truncate text-sm font-medium">{b.name || b.runtime?.display_name || b.runtime?.nickname || b.id}</p>
                   <p className="truncate font-mono text-xs text-muted-foreground">{b.runtime?.self_id || '—'}</p>
                 </div>
                 <Badge variant={b.type === 'official' ? 'info' : 'neutral'}>{t(b.type === 'official' ? 'bots.type_official' : 'bots.type_onebot')}</Badge>

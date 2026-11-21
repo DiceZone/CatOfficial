@@ -141,6 +141,33 @@ inline std::string plainText(const json& segments) {
     return out;
 }
 
+/// 记入消息索引前去掉 base64 内容（图片本体可能有几 MB），只留一个标记。
+inline json withoutInlineData(const json& segments) {
+    json out = segments;
+    if (!out.is_array()) return out;
+    for (auto& seg : out) {
+        if (!seg.is_object() || !seg.contains("data") || !seg["data"].is_object()) continue;
+        auto& data = seg["data"];
+        for (const char* key : {"file", "url"})
+            if (data.contains(key) && data[key].is_string() && data[key].get<std::string>().rfind("base64://", 0) == 0) data[key] = "base64://";
+    }
+    return out;
+}
+
+/// 消息里可以直接预览的图片地址。
+inline std::vector<std::string> imageUrls(const json& segments) {
+    std::vector<std::string> out;
+    if (!segments.is_array()) return out;
+    for (const auto& seg : segments) {
+        if (!seg.is_object() || seg.value("type", std::string()) != "image" || !seg.contains("data")) continue;
+        for (const char* key : {"url", "file"}) {
+            const auto v = seg["data"].value(key, std::string());
+            if (v.rfind("http://", 0) == 0 || v.rfind("https://", 0) == 0) { out.push_back(v); break; }
+        }
+    }
+    return out;
+}
+
 // ── 收到的官方消息 → OneBot 消息段 ─────────────────────────
 
 struct Resolver {

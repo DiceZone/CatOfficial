@@ -296,12 +296,12 @@ public:
         }
         return number(kind, openId);
     }
-    /// 全部会话最近的消息，新的在前；beforeId 大于 0 时只取更早的。
-    std::vector<Message> recentAll(int limit, int64_t beforeId) {
+    /// 全部会话的消息，新的在前，按页取。
+    std::vector<Message> recentAll(int limit, int64_t offset) {
         std::lock_guard lock(mu_);
         Statement s(db_, "SELECT id, official_id, scene, peer, sender, time, self, message, ref_idx FROM messages"
-                         " WHERE (?<=0 OR id<?) ORDER BY id DESC LIMIT ?");
-        s.bind(1, beforeId); s.bind(2, beforeId); s.bind(3, static_cast<int64_t>(limit));
+                         " ORDER BY id DESC LIMIT ? OFFSET ?");
+        s.bind(1, static_cast<int64_t>(limit)); s.bind(2, offset);
         std::vector<Message> out;
         while (s.step()) out.push_back(row(s));
         return out;

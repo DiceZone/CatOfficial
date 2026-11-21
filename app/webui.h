@@ -133,7 +133,6 @@ public:
                 bot["type"] = "official";
                 bot["app_id"] = r.data.value("appId", std::string());
                 bot["app_secret"] = r.data.value("appSecret", std::string());
-                if (bot.value("name", std::string()).empty()) bot["name"] = "官方机器人 " + bot["app_id"].get<std::string>();
                 const auto saved = saveItem("bots", body.value("bot_id", std::string()), bot);
                 if (saved->statusCode() != drogon::k200OK) { cb(saved); return; }
                 const auto result = json::parse(saved->body(), nullptr, false);
@@ -185,10 +184,10 @@ public:
             cb(jsonResponse(200, list));
         });
         route("/api/webui/messages", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
-            int64_t before = 0; int limit = 50;
-            try { if (!req->getParameter("before").empty()) before = std::stoll(req->getParameter("before")); } catch (...) {}
-            try { if (!req->getParameter("limit").empty()) limit = std::clamp(std::stoi(req->getParameter("limit")), 1, 200); } catch (...) {}
-            cb(jsonResponse(200, messages(limit, before)));
+            int64_t page = 1; int size = 50;
+            try { if (!req->getParameter("page").empty()) page = std::max<int64_t>(1, std::stoll(req->getParameter("page"))); } catch (...) {}
+            try { if (!req->getParameter("size").empty()) size = std::clamp(std::stoi(req->getParameter("size")), 1, 200); } catch (...) {}
+            cb(jsonResponse(200, json{{"total", state().hub->store()->count("messages")}, {"items", messages(size, (page - 1) * size)}}));
         });
     }
 
@@ -353,7 +352,15 @@ private:
     static json fileConfig() {
         std::ifstream in(state().configPath, std::ios::binary);
         auto raw = json::parse(in, nullptr, false);
-        return migrateConfig(raw.is_object() ? raw : json::object());
+        auto config = migrateConfig(raw.is_object() ? raw : json::object());
+        // 早先版本自动起的名字（「官方机器人」「官方机器人 <AppID>」）不算用户命名，改为空，界面显示机器人昵称。
+        if (config.contains("bots") && config["bots"].is_array())
+            for (auto& b : config["bots"]) {
+                const auto name = b.value("name", std::string());
+                const std::string auto1 = "\xE5\xAE\x98\xE6\x96\xB9\xE6\x9C\xBA\xE5\x99\xA8\xE4\xBA\xBA";   // 官方机器人
+                if (name == auto1 || (name.rfind(auto1 + " ", 0) == 0 && name.substr(auto1.size() + 1) == b.value("app_id", std::string()))) b["name"] = "";
+            }
+        return config;
     }
 
     /// 校验后写回配置文件并立即应用。只有面板地址、Webhook 入口与数据目录要重启才生效。
@@ -366,8 +373,9 @@ private:
         Server::applyConnections(parsed.connections);
         const auto& s = state().startup;
         const bool restart = parsed.webuiEnabled != s.webuiEnabled || parsed.webuiHost != s.webuiHost || parsed.webuiPort != s.webuiPort
-            || parsed.webuiRoot != s.webuiRoot || parsed.webhookHost != s.webhookHost || parsed.webhookPort != s.webhookPort
-            || parsed.webhookPath != s.webhookPath || parsed.dataDir != s.dataDir;
+            || parsed.webuiRoot != s.webuiRoot || parsed.webhookStandalone != s.webhookStandalone || parsed.webhookPath != s.webhookPath
+            || (parsed.webhookStandalone && (parsed.webhookHost != s.webhookHost || parsed.webhookPort != s.webhookPort))
+            || parsed.dataDir != s.dataDir;
         state().pendingRestart = restart;
         extra["ok"] = true;
         extra["restart_required"] = restart;
@@ -485,6 +493,7 @@ private:
         return jsonResponse(200, json{
             {"webhook", config.value("webhook", json::object())}, {"smtp", smtp}, {"smtp_password_set", passwordSet},
             {"bind", config.value("bind", json::object())}, {"webui", webui},
+            {"masters", config.value("masters", json::array())}, {"notify_masters", config.value("notify_masters", true)},
             {"data_dir", config.value("data_dir", std::string("data"))}, {"log_level", config.value("log_level", std::string("info"))},
             {"message_retention_days", config.value("message_retention_days", 7)}});
     }
@@ -507,7 +516,7 @@ private:
             if (newPassword.size() < 6) return jsonResponse(400, json{{"error", "面板密码至少 6 位"}});
             config["webui"]["password"] = newPassword;
         }
-        for (const char* key : {"data_dir", "log_level", "message_retention_days"}) if (body.contains(key)) config[key] = body[key];
+        for (const char* key : {"data_dir", "log_level", "message_retention_days", "masters", "notify_masters"}) if (body.contains(key)) config[key] = body[key];
         return commit(config);
     }
 
@@ -520,8 +529,8 @@ private:
         Config parsed;
         try { parsed = parseConfig(json{{"smtp", smtp}}); }
         catch (const std::exception& e) { cb(jsonResponse(400, json{{"error", e.what()}})); return; }
-        const auto to = body.value("to", parsed.smtp.ownerEmail);
-        if (to.empty()) { cb(jsonResponse(400, json{{"error", "请填写收件地址或主人邮箱"}})); return; }
+        const auto to = parsed.smtp.notifyEmails.empty() ? std::string() : parsed.smtp.notifyEmails.front();
+        if (to.empty()) { cb(jsonResponse(400, json{{"error", "请先填写至少一个通知邮箱"}})); return; }
         Mailer mailer(parsed.smtp, nullptr);
         if (!mailer.usable()) { cb(jsonResponse(400, json{{"error", "请填写 SMTP 服务器与发件地址"}})); return; }
         auto loop = drogon::app().getLoop();
@@ -539,13 +548,18 @@ private:
                     {"direct", i.direct}, {"name", i.name}};
     }
 
-    static json messages(int limit, int64_t before) {
+    static json messages(int limit, int64_t offset) {
         const auto store = state().hub->store();
         json list = json::array();
-        for (const auto& m : store->recentAll(limit, before)) {
+        for (const auto& m : store->recentAll(limit, offset)) {
             const bool direct = m.scene == static_cast<int>(event::Scene::direct);
+            const auto segments = onebot::withoutInlineData(m.message);
+            // 能直接预览的图片单独给出，文字里就不再放「[图片]」。
+            json textual = json::array();
+            for (const auto& seg : segments)
+                if (!(seg.is_object() && seg.value("type", std::string()) == "image" && !onebot::imageUrls(json::array({seg})).empty())) textual.push_back(seg);
             json item{{"id", m.id}, {"time", m.time}, {"self", m.self}, {"scene", direct ? "private" : "group"},
-                      {"content", onebot::toCq(m.message)}, {"text", onebot::plainText(m.message)}};
+                      {"content", onebot::toCq(segments)}, {"text", onebot::plainText(textual)}, {"images", onebot::imageUrls(segments)}};
             const auto kind = direct ? Kind::user : Kind::group;
             item["peer"] = store->number(kind, m.peer);
             item["peer_name"] = store->name(kind, m.peer);

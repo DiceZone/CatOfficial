@@ -43,18 +43,11 @@ public:
         }).detach();
     }
 
-    /// 给主人发通知；同一 key 在 throttleSeconds 内只发一次。
-    void notifyOwner(const std::string& key, const std::string& subject, const std::string& body, int throttleSeconds = 600) {
+    /// 发到全部通知邮箱。
+    void notifyAll(const std::string& subject, const std::string& body) {
         const auto config = this->config();
-        if (!config.usable() || config.ownerEmail.empty()) return;
-        {
-            std::lock_guard lock(mu_);
-            const auto now = std::time(nullptr);
-            auto& last = lastSent_[key];
-            if (last && now - last < throttleSeconds) return;
-            last = now;
-        }
-        send(config.ownerEmail, subject, body);
+        if (!config.usable()) return;
+        for (const auto& to : config.notifyEmails) send(to, subject, body);
     }
 
     static std::string encodeHeader(const std::string& text) { return "=?UTF-8?B?" + drogon::utils::base64Encode(text) + "?="; }
@@ -128,7 +121,6 @@ private:
     SmtpConfig config_;
     Logger log_;
     mutable std::mutex mu_;
-    std::map<std::string, std::time_t> lastSent_;
 };
 
 }  // namespace catofficial::app

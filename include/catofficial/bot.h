@@ -1,7 +1,7 @@
 #pragma once
 
 // 一个官方机器人的完整生命周期：取 Token → 机器人资料 → 分享链接（真实 QQ 号）→
-// WebSocket（官方文档称 Gateway）或 Webhook 收事件 → 解析成中性事件 → 发送时自动补全被动回复。
+// WebSocket 或 Webhook 收事件 → 解析成中性事件 → 发送时自动补全被动回复。
 //
 // Bot 只做协议层的事，不决定上层如何呈现：消息与通知以 event::MessageEvent /
 // event::Notice 交给 Handlers，发送接受官方消息体（content / markdown / media …）。

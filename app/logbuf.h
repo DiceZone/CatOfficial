@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <ctime>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -33,10 +34,18 @@ public:
     void setMinimum(const std::string& name) { minimum_ = name == "debug" ? 0 : name == "warn" ? 2 : name == "error" ? 3 : 1; }
     int minimum() const { return minimum_.load(); }
 
+    /// 错误级别日志的额外接收者（运行异常通知）。
+    void setErrorSink(std::function<void(const std::string&)> sink) { std::lock_guard lock(mu_); errorSink_ = std::move(sink); }
+
     void push(LogLevel level, const std::string& message) {
-        std::lock_guard lock(mu_);
-        entries_.push_back(Entry{++seq_, std::time(nullptr), level, message});
-        while (entries_.size() > kCapacity) entries_.pop_front();
+        std::function<void(const std::string&)> sink;
+        {
+            std::lock_guard lock(mu_);
+            entries_.push_back(Entry{++seq_, std::time(nullptr), level, message});
+            while (entries_.size() > kCapacity) entries_.pop_front();
+            if (level == LogLevel::error) sink = errorSink_;
+        }
+        if (sink) sink(message);
     }
 
     /// seq 大于 after 的条目，最多 limit 条（取最新的）。
@@ -68,6 +77,7 @@ private:
     struct Entry { uint64_t seq; std::time_t time; LogLevel level; std::string message; };
     std::mutex mu_;
     Logger logger_;
+    std::function<void(const std::string&)> errorSink_;
     std::atomic<int> minimum_{1};
     std::deque<Entry> entries_;
     uint64_t seq_ = 0;

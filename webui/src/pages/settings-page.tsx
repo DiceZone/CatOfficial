@@ -1,57 +1,86 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { MailCheck, Save, TriangleAlert } from 'lucide-react';
+import { MailCheck, Plus, Save, Trash2, TriangleAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { PageHeader } from '@/components/page-header';
-import { Choice, Field, Toggle, digits, errorText } from '@/components/form';
-import { api, type Settings } from '@/lib/api';
+import { Choice, Field, TagInput, Toggle, digits, errorText } from '@/components/form';
+import { api, botLabel, type Settings } from '@/lib/api';
+
+const isEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
 export function SettingsPage() {
   const { t } = useTranslation();
   const client = useQueryClient();
   const loaded = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const bots = useQuery({ queryKey: ['bots'], queryFn: api.bots });
   const [s, setS] = React.useState<Settings | null>(null);
   const [newPassword, setNewPassword] = React.useState('');
-  const [testTo, setTestTo] = React.useState('');
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => { if (loaded.data && !s) setS(structuredClone(loaded.data)); }, [loaded.data, s]);
   if (!s) return <PageHeader title={t('settings.title')} description={t('common.loading')} />;
 
+  const officials = (bots.data ?? []).filter((b) => b.type === 'official');
   const patch = <K extends 'webhook' | 'smtp' | 'bind' | 'webui'>(section: K, value: Partial<Settings[K]>) =>
     setS((prev) => (prev ? { ...prev, [section]: { ...prev[section], ...value } } : prev));
   const set = (value: Partial<Settings>) => setS((prev) => (prev ? { ...prev, ...value } : prev));
+  const masters = s.masters ?? [];
+  const setMasters = (list: NonNullable<Settings['masters']>) => set({ masters: list });
 
   const save = async () => {
     setBusy(true);
     try {
-      await api.saveSettings({ ...s, new_password: newPassword });
+      const r = await api.saveSettings({ ...s, masters: masters.filter((m) => m.openid.trim()), new_password: newPassword });
       setNewPassword('');
       toast.success(t('common.saved'));
-      void client.invalidateQueries({ queryKey: ['status'] });
+      if (r.restart_required) void client.invalidateQueries({ queryKey: ['status'] });
     } catch (e) { toast.error(t('common.failed', { error: errorText(e) })); }
     finally { setBusy(false); }
   };
   const testMail = async () => {
-    try { await api.testSmtp(s.smtp, testTo || s.smtp.owner_email || ''); toast.success(t('settings.smtp_test_sent')); }
+    try { await api.testSmtp(s.smtp); toast.success(t('settings.smtp_test_sent')); }
     catch (e) { toast.error(t('common.failed', { error: errorText(e) })); }
   };
 
-  const publicHost = s.webui.host === '0.0.0.0';
   return (
     <>
       <PageHeader title={t('settings.title')} description={t('settings.description')}
         actions={<Button size="sm" disabled={busy} onClick={save}><Save className="mr-2 h-4 w-4" />{t('common.save')}</Button>} />
 
-      {publicHost && (
+      {s.webui.host === '0.0.0.0' && (
         <Card className="border-amber-500/40 bg-amber-500/5">
           <CardContent className="flex items-start gap-3 text-sm"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />{t('settings.public_warning')}</CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader><CardTitle>{t('settings.masters')}</CardTitle><CardDescription>{t('settings.masters_hint')}</CardDescription></CardHeader>
+        <CardContent className="space-y-3">
+          {masters.length === 0 && <p className="text-sm text-muted-foreground">{t('settings.master_empty')}</p>}
+          {masters.map((m, i) => (
+            <div key={i} className="grid items-end gap-3 sm:grid-cols-[14rem_1fr_auto]">
+              <Field label={t('settings.master_bot')}>
+                <Choice value={m.bot_id || '*'} onChange={(v) => setMasters(masters.map((x, j) => (j === i ? { ...x, bot_id: v === '*' ? '' : v } : x)))}
+                  options={[{ value: '*', label: t('settings.master_all') }, ...officials.map((b) => ({ value: b.id, label: botLabel(b) }))]} />
+              </Field>
+              <Field label={t('settings.master_openid')}>
+                <Input className="font-mono" value={m.openid} onChange={(e) => setMasters(masters.map((x, j) => (j === i ? { ...x, openid: e.target.value.trim() } : x)))} />
+              </Field>
+              <Button variant="ghost" size="icon" aria-label={t('common.remove')} onClick={() => setMasters(masters.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button>
+            </div>
+          ))}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setMasters([...masters, { bot_id: '', openid: '' }])}><Plus className="mr-1 h-4 w-4" />{t('settings.master_add')}</Button>
+            <label className="flex items-center gap-2 text-sm">{t('settings.notify_masters')}<Switch checked={s.notify_masters !== false} onCheckedChange={(v) => set({ notify_masters: v })} /></label>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader><CardTitle>{t('settings.smtp')}</CardTitle><CardDescription>{t('settings.smtp_hint')}</CardDescription></CardHeader>
@@ -69,14 +98,14 @@ export function SettingsPage() {
               <Input type="password" autoComplete="new-password" value={s.smtp.password ?? ''} onChange={(e) => patch('smtp', { password: e.target.value })} />
             </Field>
             <Field label={t('settings.smtp_from')}><Input value={s.smtp.from ?? ''} placeholder="bot@example.com" onChange={(e) => patch('smtp', { from: e.target.value.trim() })} /></Field>
-            <Field label={t('settings.owner_email')}><Input value={s.smtp.owner_email ?? ''} onChange={(e) => patch('smtp', { owner_email: e.target.value.trim() })} /></Field>
           </div>
-          <Toggle label={t('settings.notify_offline')} checked={s.smtp.notify_offline !== false} onChange={(v) => patch('smtp', { notify_offline: v })} />
-          <div className="flex flex-wrap items-end gap-2 border-t pt-5">
-            <div className="min-w-[14rem] flex-1">
-              <Field label={t('settings.owner_email')}><Input value={testTo} placeholder={s.smtp.owner_email ?? ''} onChange={(e) => setTestTo(e.target.value.trim())} /></Field>
-            </div>
+          <Toggle label={t('settings.notify_errors')} checked={s.smtp.notify_errors !== false} onChange={(v) => patch('smtp', { notify_errors: v })} />
+          <Field label={t('settings.notify_emails')} hint={t('settings.notify_emails_hint')}>
+            <TagInput values={s.smtp.notify_emails ?? []} onChange={(v) => patch('smtp', { notify_emails: v })} validate={isEmail} placeholder="name@example.com" />
+          </Field>
+          <div className="flex flex-wrap items-center gap-3 border-t pt-5">
             <Button variant="outline" onClick={testMail}><MailCheck className="mr-2 h-4 w-4" />{t('settings.smtp_test')}</Button>
+            <span className="text-xs text-muted-foreground">{t('settings.smtp_test_hint')}</span>
           </div>
         </CardContent>
       </Card>
@@ -102,10 +131,15 @@ export function SettingsPage() {
 
       <Card>
         <CardHeader><CardTitle>{t('settings.webhook')}</CardTitle><CardDescription>{t('settings.webhook_hint')}</CardDescription></CardHeader>
-        <CardContent className="grid gap-5 md:grid-cols-3">
-          <Field label={t('settings.host')}><Input value={s.webhook.host ?? '0.0.0.0'} onChange={(e) => patch('webhook', { host: e.target.value.trim() })} /></Field>
-          <Field label={t('settings.port')}><Input inputMode="numeric" value={s.webhook.port ?? 0} onChange={(e) => patch('webhook', { port: digits(e.target.value) })} /></Field>
+        <CardContent className="grid items-end gap-5 md:grid-cols-[1fr_auto_10rem]">
           <Field label={t('settings.path')}><Input value={s.webhook.path ?? '/webhook/qqbot'} onChange={(e) => patch('webhook', { path: e.target.value.trim() })} /></Field>
+          <div className="flex h-10 items-center gap-2">
+            <Switch id="webhook-standalone" checked={!!s.webhook.standalone} onCheckedChange={(v) => patch('webhook', { standalone: v })} />
+            <Label htmlFor="webhook-standalone">{t('settings.webhook_standalone')}</Label>
+          </div>
+          {s.webhook.standalone
+            ? <Field label={t('settings.port')}><Input inputMode="numeric" value={s.webhook.port ?? 8443} onChange={(e) => patch('webhook', { port: digits(e.target.value) })} /></Field>
+            : <div />}
         </CardContent>
       </Card>
 

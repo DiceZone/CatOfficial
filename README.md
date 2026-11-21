@@ -21,11 +21,11 @@ catofficial [配置文件]
 | 页面 | 内容 |
 |---|---|
 | 概览 | 各机器人是否在线、各连接的状态、收发数量 |
-| 登录管理 | 添加多个官方机器人（支持扫码登录）；接入原 QQ 机器人（如 NapCat），供官民绑定使用 |
+| 登录管理 | 添加多个官方机器人（默认扫码登录，也可手动输入密钥）；接入 OneBot 机器人（如 NapCat，反向或正向 WebSocket），供官民绑定使用 |
 | 连接管理 | 添加 OneBot 连接，每个连接单独设置令牌、消息格式、是否上报自身消息、服务哪些官方机器人 |
 | 消息记录 / 运行日志 | 收发的消息；程序最近 3000 条日志 |
 | 官民绑定 | 已绑定的用户与群、等待确认的群、手动绑定与解绑 |
-| 设置 | 邮件（SMTP）、绑定指令、Webhook 入口、面板端口与密码 |
+| 设置 | 主人、邮件（SMTP）与运行异常通知、绑定指令、Webhook 入口、面板端口与密码 |
 
 - 机器人、连接与设置的修改写入配置文件并立即生效，不用重启。只有面板自身的地址、官方 Webhook 入口与数据目录改了要重启，面板顶部会提示，点一下即可；重启后登录状态保留。
 - 面板与 OneBot 使用不同端口。默认只监听本机；改成 `0.0.0.0` 时其他机器也能访问，请使用足够强的密码。同一 IP 连续输错 5 次密码会被暂停 5 分钟。
@@ -53,21 +53,23 @@ catofficial [配置文件]
   "bots": [
     { "id": "bot1", "name": "主号", "enabled": true, "type": "official", "app_id": "", "app_secret": "",
       "mode": "websocket", "subscribe_group_member_events": false, "auto_ack_interactions": true },
-    { "id": "bot2", "name": "原 QQ 号", "enabled": true, "type": "onebot", "url": "ws://127.0.0.1:3001", "token": "" }
+    { "id": "bot2", "name": "", "enabled": true, "type": "onebot", "connection": "reverse", "host": "127.0.0.1", "port": 6800, "token": "" }
   ],
   "connections": [
     { "id": "ws", "name": "正向 WebSocket", "enabled": true, "type": "ws_server", "host": "127.0.0.1", "port": 6700,
       "token": "", "message_format": "array", "report_self": false, "heartbeat_interval": 30000, "bots": [] }
   ],
-  "webhook": { "host": "0.0.0.0", "port": 0, "path": "/webhook/qqbot" },
-  "smtp": { "enabled": false, "host": "", "port": 465, "security": "ssl", "username": "", "password": "", "from": "", "owner_email": "", "notify_offline": true },
+  "masters": [ { "bot_id": "", "openid": "…" } ],
+  "notify_masters": true,
+  "webhook": { "path": "/webhook/qqbot", "standalone": false, "host": "0.0.0.0", "port": 8443 },
+  "smtp": { "enabled": false, "host": "", "port": 465, "security": "ssl", "username": "", "password": "", "from": "", "notify_emails": [], "notify_errors": true },
   "bind": { "enabled": true, "command": ".bind", "window_seconds": 5, "group_confirm_users": 3, "email_enabled": true, "email_domain": "qq.com", "code_ttl_minutes": 10 },
   "webui": { "enabled": true, "host": "127.0.0.1", "port": 18082, "password": "", "root": "web" },
   "data_dir": "data", "log_level": "info", "message_retention_days": 7
 }
 ```
 
-`bots` 为空的连接服务全部官方机器人。旧版的单机器人配置（`bot` + `onebot`）启动时会自动转成上面的格式。
+机器人的 `name` 留空时显示机器人昵称。OneBot 机器人的 `connection` 为 `reverse`（默认，在 NapCat 里添加 WebSocket 客户端连 `ws://host:port/`）或 `forward`（填 `url`，CatOfficial 去连它）。连接的 `bots` 为空表示服务全部官方机器人。Webhook 入口默认挂在面板端口上，`standalone` 为 true 时单独监听 `port`。旧版的单机器人配置（`bot` + `onebot`）启动时会自动转成上面的格式。
 
 ## 号码与官民绑定
 
@@ -83,9 +85,10 @@ catofficial [配置文件]
 .bind code <验证码> // 用邮件里的验证码完成绑定
 .bind status        // 查看当前绑定
 .bind remove        // 解除自己的绑定
+.bind group <群号>  // （主人）把本群直接关联到群号
 ```
 
-暗号绑定需要在「登录管理」里接入一个原 QQ 机器人（如 NapCat 的正向 WebSocket），并和官方机器人在同一个群。用户绑定立即生效；群号在群主或管理员完成绑定时立即关联，否则需要凑够设定人数的普通成员。同一暗号被两个人同时使用时会作废，请用不容易撞的暗号。
+暗号绑定需要在「登录管理」里接入一个 OneBot 机器人（如 NapCat），并和官方机器人在同一个群。用户绑定立即生效；群号在群主或管理员完成绑定时立即关联，否则需要凑够设定人数的普通成员。同一暗号被两个人同时使用时会作废，请用不容易撞的暗号。
 
 主人也可以在面板的「官民绑定」页手动绑定，或：
 
@@ -96,9 +99,11 @@ catofficial [配置文件]
   ```
 - 调用扩展动作 `set_identity_binding`：`{"type": "user", "user_id": <当前号码>, "qq": <真实号码>}`。
 
-## 邮件
+## 主人与运行异常通知
 
-在设置中填写 SMTP 后，CatOfficial 会在官方机器人掉线与恢复时发邮件给主人（同一机器人 10 分钟内最多一封），并用于 `.bind email` 的验证码。
+主人 = 某个官方机器人（或全部）上的 OpenID，可以在群里用 `.bind group <群号>` 直接关联群号。OpenID 可以让对方发送 `.bind status` 查看。
+
+程序出现错误时，CatOfficial 会把一段时间内的错误汇总（最多每 10 分钟一次），发到设置里的通知邮箱（可填多个），并私聊通知主人。邮件也用于 `.bind email` 的验证码。
 
 ## 支持的动作
 
@@ -157,7 +162,7 @@ target_link_libraries(your-target PRIVATE catofficial::core)
 |---|---|
 | `catofficial/bot.h` | 一个机器人的完整生命周期，发送时自动补全被动回复 |
 | `catofficial/qrlogin.h` | 扫码登录官方机器人，取回 AppID 与 AppSecret |
-| `catofficial/session.h` | AccessToken、WebSocket 连接（官方文档称 Gateway）、鉴权、心跳与重连 |
+| `catofficial/session.h` | AccessToken、WebSocket 连接、鉴权、心跳与重连 |
 | `catofficial/event.h` | 与框架无关的事件解析 |
 | `catofficial/api.h` | 开放平台接口调用、机器人资料与分享链接 |
 | `catofficial/media.h` | 富媒体 URL 直传与本地文件分片上传 |

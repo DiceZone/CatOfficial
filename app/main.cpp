@@ -140,8 +140,10 @@ int main(int argc, char** argv) {
     for (const auto& b : config.bots) if (b.enabled) (b.official() ? officials : legacies)++;
     log(catofficial::LogLevel::info, "官方机器人 " + std::to_string(officials) + " 个，原 QQ 机器人 " + std::to_string(legacies) + " 个");
     if (!officials) log(catofficial::LogLevel::warn, "还没有启用的官方机器人，请在管理面板的「登录管理」里添加");
-    if (config.webhookPort)
+    if (config.webhookStandalone)
         log(catofficial::LogLevel::info, "官方 Webhook 入口：" + config.webhookHost + ":" + std::to_string(config.webhookPort) + config.webhookPath);
+    else if (config.webuiEnabled)
+        log(catofficial::LogLevel::info, "官方 Webhook 入口：面板端口 " + std::to_string(config.webuiPort) + config.webhookPath);
     if (config.webuiEnabled) {
         const auto host = config.webuiHost == "0.0.0.0" ? std::string("127.0.0.1") : config.webuiHost;
         log(catofficial::LogLevel::info, "管理面板：http://" + host + ":" + std::to_string(config.webuiPort) + "/");

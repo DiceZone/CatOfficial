@@ -243,6 +243,20 @@ TEST(OldConfigMigratesToBotsAndConnections) {
     CHECK_EQ(c.webuiPort, uint16_t(18082));
 }
 
+TEST(RenamingABotDoesNotNeedReconnect) {
+    BotConfig a; a.id = "b"; a.name = "甲"; a.appId = "A"; a.appSecret = "S";
+    BotConfig b = a; b.name = "乙"; b.autoAckInteractions = false;
+    CHECK(a.sameConnection(b));
+    b.appSecret = "S2";
+    CHECK(!a.sameConnection(b));
+    const auto c = parseConfig(json::parse(R"({"bots":[{"id":"x","type":"onebot","url":"ws://127.0.0.1:3001"},{"id":"y","type":"onebot","port":6801}],
+        "webhook":{"path":"/webhook/qqbot","standalone":false,"port":8443},"smtp":{"owner_email":"a@b.c"}})"));
+    CHECK_EQ(c.bots[0].connection, std::string("forward"));
+    CHECK_EQ(c.bots[1].connection, std::string("reverse"));
+    CHECK(!c.webhookStandalone);
+    CHECK_EQ(c.smtp.notifyEmails.size(), std::size_t(1));
+}
+
 TEST(ConfigRejectsDuplicatePortsAndBadUrls) {
     bool threw = false;
     try { parseConfig(json::parse(R"({"connections":[{"id":"a","type":"ws_server","port":6700},{"id":"b","type":"http_server","port":6700}]})")); }
@@ -272,7 +286,7 @@ TEST(BindCommandPairsOfficialAndLegacySides) {
     auto reply = [&](const std::string& t) { replies.push_back(t); };
 
     // 普通成员：用户绑定，群还差一票。
-    CHECK(service->onOfficial(official("U1", ".bind 甲乙丙"), reply));
+    CHECK(service->onOfficial("b", official("U1", ".bind 甲乙丙"), reply));
     service->onLegacy(LegacyMessage{"legacy", 778899, 123456, "member", ".bind 甲乙丙"});
     CHECK_EQ(store->number(Kind::user, "U1"), int64_t(123456));
     CHECK(!store->bound(Kind::group, "GOPEN"));
@@ -281,25 +295,25 @@ TEST(BindCommandPairsOfficialAndLegacySides) {
 
     // 第二位成员（原机器人那边先到）：够票，群关联。
     service->onLegacy(LegacyMessage{"legacy", 778899, 654321, "member", ".bind 丁戊"});
-    CHECK(service->onOfficial(official("U2", ".bind 丁戊"), reply));
+    CHECK(service->onOfficial("b", official("U2", ".bind 丁戊"), reply));
     CHECK_EQ(store->number(Kind::user, "U2"), int64_t(654321));
     CHECK_EQ(store->number(Kind::group, "GOPEN"), int64_t(778899));
 
     // 同一暗号同一侧出现两次：作废并提示。
     replies.clear();
-    CHECK(service->onOfficial(official("U3", ".bind 撞了"), reply));
-    CHECK(service->onOfficial(official("U4", ".bind 撞了"), reply));
+    CHECK(service->onOfficial("b", official("U3", ".bind 撞了"), reply));
+    CHECK(service->onOfficial("b", official("U4", ".bind 撞了"), reply));
     CHECK_EQ(replies.size(), std::size_t(2));
     CHECK(replies[0].find("同一个暗号") != std::string::npos);
 
     // 状态与解绑。
     replies.clear();
-    CHECK(service->onOfficial(official("U1", ".bind status"), reply));
+    CHECK(service->onOfficial("b", official("U1", ".bind status"), reply));
     CHECK(replies.back().find("12**56") != std::string::npos);
-    CHECK(service->onOfficial(official("U1", ".bind remove"), reply));
+    CHECK(service->onOfficial("b", official("U1", ".bind remove"), reply));
     CHECK(!store->bound(Kind::user, "U1"));
     // 普通消息不拦截。
-    CHECK(!service->onOfficial(official("U1", "你好"), reply));
+    CHECK(!service->onOfficial("b", official("U1", "你好"), reply));
 }
 
 }  // namespace

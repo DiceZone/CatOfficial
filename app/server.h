@@ -405,7 +405,7 @@ public:
     static void setup(std::shared_ptr<Hub> h) {
         hub() = std::move(h);
         const auto cfg = hub()->config();
-        if (cfg.webhookPort) drogon::app().addListener(cfg.webhookHost, cfg.webhookPort);
+        if (cfg.webhookStandalone) drogon::app().addListener(cfg.webhookHost, cfg.webhookPort);
         drogon::app().registerHandler("/{file}",
             [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& file) {
                 if (panelFile() && panelPort() && req->getLocalAddr().toPort() == panelPort()) { callback(panelFile()(file)); return; }
@@ -413,11 +413,13 @@ public:
                 resp->setStatusCode(drogon::k404NotFound);
                 callback(resp);
             }, {drogon::Get});
-        if (cfg.webhookPort) {
+        // Webhook 入口默认挂在面板端口上，开启独立端口时只在那个端口响应。
+        if (cfg.webhookStandalone || cfg.webuiEnabled) {
+            const uint16_t port = cfg.webhookStandalone ? cfg.webhookPort : cfg.webuiPort;
             drogon::app().registerHandler(cfg.webhookPath,
-                [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+                [port](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
                     auto resp = drogon::HttpResponse::newHttpResponse();
-                    if (req->getLocalAddr().toPort() != hub()->config().webhookPort) { resp->setStatusCode(drogon::k404NotFound); callback(resp); return; }
+                    if (req->getLocalAddr().toPort() != port) { resp->setStatusCode(drogon::k404NotFound); callback(resp); return; }
                     const auto reply = hub()->acceptWebhook(req->getHeader("X-Bot-Appid"), req->getHeader("X-Signature-Timestamp"),
                         req->getHeader("X-Signature-Ed25519"), std::string(req->getBody()));
                     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(reply.status));

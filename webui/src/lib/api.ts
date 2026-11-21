@@ -26,7 +26,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export interface OfficialRuntime {
-  configured?: boolean; online: boolean; self_id: number; nickname: string; avatar?: string;
+  configured?: boolean; online: boolean; self_id: number; nickname: string; display_name?: string; avatar?: string; listening?: boolean;
   app_id?: string; mode?: string; received?: number; sent?: number; error?: string; running?: boolean;
 }
 
@@ -41,10 +41,18 @@ export interface Bot {
   mode?: 'websocket' | 'webhook';
   subscribe_group_member_events?: boolean;
   auto_ack_interactions?: boolean;
+  connection?: 'reverse' | 'forward';
+  host?: string;
+  port?: number;
   url?: string;
   token?: string;
   token_set?: boolean;
   runtime?: OfficialRuntime;
+}
+
+/// 显示名：用户起的名字；没起时用机器人昵称，再没有用 AppID 或 id。
+export function botLabel(b: Pick<Bot, 'name' | 'app_id' | 'id' | 'runtime'>): string {
+  return b.name || b.runtime?.display_name || b.runtime?.nickname || b.app_id || b.id;
 }
 
 export type ConnectionType = 'http_server' | 'ws_server' | 'http_client' | 'ws_client';
@@ -95,14 +103,16 @@ export interface Bindings {
 
 export interface MessageRow {
   id: number; time: number; self: boolean; scene: 'private' | 'group';
-  content: string; text: string; peer: number; peer_name: string; sender?: number; sender_name?: string;
+  content: string; text: string; images: string[]; peer: number; peer_name: string; sender?: number; sender_name?: string;
 }
 
 export interface LogEntry { seq: number; time: number; level: 'debug' | 'info' | 'warn' | 'error'; message: string }
 
 export interface Settings {
-  webhook: { host?: string; port?: number; path?: string };
-  smtp: { enabled?: boolean; host?: string; port?: number; security?: 'ssl' | 'starttls' | 'none'; username?: string; password?: string; from?: string; owner_email?: string; notify_offline?: boolean };
+  webhook: { host?: string; port?: number; path?: string; standalone?: boolean };
+  smtp: { enabled?: boolean; host?: string; port?: number; security?: 'ssl' | 'starttls' | 'none'; username?: string; password?: string; from?: string; notify_emails?: string[]; notify_errors?: boolean };
+  masters?: { bot_id: string; openid: string }[];
+  notify_masters?: boolean;
   smtp_password_set?: boolean;
   bind: { enabled?: boolean; command?: string; window_seconds?: number; group_confirm_users?: number; email_enabled?: boolean; email_domain?: string; code_ttl_minutes?: number };
   webui: { enabled?: boolean; host?: string; port?: number; root?: string };
@@ -131,7 +141,7 @@ export const api = {
 
   settings: () => request<Settings>('GET', 'settings'),
   saveSettings: (s: Settings) => request<Saved>('PUT', 'settings', s),
-  testSmtp: (smtp: Settings['smtp'], to: string) => request<{ ok: boolean }>('POST', 'smtp/test', { smtp, to }),
+  testSmtp: (smtp: Settings['smtp']) => request<{ ok: boolean }>('POST', 'smtp/test', { smtp }),
 
   qrStart: () => request<{ session_id: string; url: string }>('POST', 'qr/start'),
   qrPoll: (sessionId: string, bot: Partial<Bot>, botId?: string) =>
@@ -143,5 +153,5 @@ export const api = {
   bind: (body: { type: string; user_id?: number; group_id?: number; openid?: string; qq: number }) => request<{ ok: boolean }>('POST', 'bindings', body),
   unbind: (type: string, openid: string) => request<{ ok: boolean; number: number }>('DELETE', 'bindings', { type, openid }),
   identities: (q: string) => request<Identity[]>('GET', `identities?q=${encodeURIComponent(q)}`),
-  messages: (before = 0, limit = 50) => request<MessageRow[]>('GET', `messages?limit=${limit}&before=${before}`),
+  messages: (page = 1, size = 50) => request<{ total: number; items: MessageRow[] }>('GET', `messages?page=${page}&size=${size}`),
 };

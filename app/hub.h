@@ -28,11 +28,6 @@
 
 namespace catofficial::app {
 
-inline bool sameBot(const BotConfig& a, const BotConfig& b) {
-    return std::tie(a.id, a.name, a.enabled, a.type, a.appId, a.appSecret, a.webhook, a.subscribeGroupMemberEvents, a.autoAckInteractions, a.url, a.token)
-        == std::tie(b.id, b.name, b.enabled, b.type, b.appId, b.appSecret, b.webhook, b.subscribeGroupMemberEvents, b.autoAckInteractions, b.url, b.token);
-}
-
 class Hub : public std::enable_shared_from_this<Hub> {
 public:
     using json = nlohmann::json;
@@ -43,8 +38,12 @@ public:
 
     void init() {
         mailer_ = std::make_shared<Mailer>(config_.smtp, log_);
-        std::lock_guard lock(mu_);
-        bind_ = std::make_shared<BindService>(config_.bind, store_, mailer_, log_);
+        {
+            std::lock_guard lock(mu_);
+            bind_ = std::make_shared<BindService>(config_.bind, store_, mailer_, log_);
+        }
+        std::weak_ptr<Hub> weak = weak_from_this();
+        LogBuffer::get().setErrorSink([weak](const std::string& message) { if (auto self = weak.lock()) self->reportError(message); });
     }
 
     /// 按当前配置启动全部机器人（事件循环开始后调用）。
@@ -201,18 +200,24 @@ private:
             for (auto it = relays_.begin(); it != relays_.end();) {
                 const auto* next = find(after, (*it)->id());
                 const auto* prev = find(before, (*it)->id());
-                if (!next || !next->enabled || !next->official() || (prev && !sameBot(*prev, *next))) {
+                if (!next || !next->enabled || !next->official() || (prev && !prev->sameConnection(*next))) {
                     stopRelays.push_back(*it);
                     it = relays_.erase(it);
-                } else ++it;
+                } else {
+                    (*it)->update(*next);   // 名称等就地更新，不重连
+                    ++it;
+                }
             }
             for (auto it = legacies_.begin(); it != legacies_.end();) {
                 const auto* next = find(after, it->first);
                 const auto* prev = find(before, it->first);
-                if (!next || !next->enabled || next->official() || (prev && !sameBot(*prev, *next))) {
+                if (!next || !next->enabled || next->official() || (prev && !prev->sameConnection(*next))) {
                     stopLegacies.push_back(it->second);
                     it = legacies_.erase(it);
-                } else ++it;
+                } else {
+                    it->second->update(*next);
+                    ++it;
+                }
             }
             for (const auto& b : after) {
                 if (!b.enabled) continue;
@@ -225,7 +230,7 @@ private:
         for (auto& r : stopRelays) {
             webhooks_.unbind(r->config().appId, r->id());
             r->stop();
-            say(LogLevel::info, "已停止官方机器人「" + r->config().name + "」");
+            say(LogLevel::info, "已停止官方机器人「" + r->displayName() + "」");
         }
         for (auto& l : stopLegacies) l->stop();
         std::weak_ptr<Hub> weak = weak_from_this();
@@ -250,6 +255,10 @@ private:
         for (const auto& b : cfg.bots) if (b.enabled && !b.official()) legacy = true;
         auto service = std::make_shared<BindService>(cfg.bind, store_, mailer_, log_);
         service->setLegacyAvailable(legacy);
+        service->setMasterCheck([weak](const std::string& botId, const std::string& openId) {
+            auto self = weak.lock();
+            return self && self->config().isMaster(botId, openId);
+        });
         { std::lock_guard lock(mu_); bind_ = service; }
     }
 
@@ -261,15 +270,52 @@ private:
         hooks.intercept = [weak](Relay& relay, const event::MessageEvent& e) {
             auto self = weak.lock(); if (!self) return false;
             std::weak_ptr<Relay> r = relay.weak_from_this();
-            return self->bind()->onOfficial(e, [r, e](const std::string& text) { if (auto relay = r.lock()) relay->replyText(e, text); });
-        };
-        hooks.state = [weak, id, name = b.name](bool online, const std::string& reason) {
-            auto self = weak.lock(); if (!self) return;
-            if (!self->mailer_->config().notifyOffline) return;
-            if (online) self->mailer_->notifyOwner("online:" + id, "官方机器人「" + name + "」已恢复在线", "官方机器人「" + name + "」已重新上线。", 0);
-            else self->mailer_->notifyOwner("offline:" + id, "官方机器人「" + name + "」离线", "官方机器人「" + name + "」离线：" + reason + "\n\nCatOfficial 会自动重连；长时间未恢复请检查网络与机器人配置。");
+            return self->bind()->onOfficial(relay.id(), e, [r, e](const std::string& text) { if (auto relay = r.lock()) relay->replyText(e, text); });
         };
         return hooks;
+    }
+
+    // ── 运行异常通知 ────────────────────────────────────────
+    // 错误级别的日志先攒起来，最多每 10 分钟汇总一次：发到通知邮箱，并私聊主人。
+
+    void reportError(const std::string& message) {
+        std::lock_guard lock(errMu_);
+        if (pendingErrors_.size() < 50) pendingErrors_.push_back(message);
+        if (flushScheduled_) return;
+        flushScheduled_ = true;
+        const auto now = std::time(nullptr);
+        const double delay = std::max<double>(60.0, static_cast<double>(lastFlush_ + 600 - now));
+        std::weak_ptr<Hub> weak = weak_from_this();
+        drogon::app().getLoop()->runAfter(delay, [weak] { if (auto self = weak.lock()) self->flushErrors(); });
+    }
+
+    void flushErrors() {
+        std::vector<std::string> errors;
+        {
+            std::lock_guard lock(errMu_);
+            errors.swap(pendingErrors_);
+            flushScheduled_ = false;
+            lastFlush_ = std::time(nullptr);
+        }
+        if (errors.empty()) return;
+        const auto cfg = config();
+        std::string body = "CatOfficial 最近出现了 " + std::to_string(errors.size()) + " 条错误：\n\n";
+        for (const auto& e : errors) body += "· " + e + "\n";
+        body += "\n详情可在管理面板的「运行日志」中查看。";
+        if (cfg.smtp.notifyErrors) mailer_->notifyAll("CatOfficial 运行异常", body);
+        if (!cfg.notifyMasters) return;
+        std::string brief = "CatOfficial 运行异常（" + std::to_string(errors.size()) + " 条）：";
+        for (std::size_t i = 0; i < errors.size() && i < 3; ++i) brief += "\n· " + errors[i];
+        if (errors.size() > 3) brief += "\n……详见管理面板的运行日志";
+        const auto running = relays();
+        for (const auto& m : cfg.masters) {
+            for (const auto& r : running) {
+                if (!m.botId.empty() && m.botId != r->id()) continue;
+                if (!r->bot()->online()) continue;
+                r->sendPrivateText(m.openId, brief);
+                break;   // 「全部机器人」的主人只由第一个在线的机器人通知一次
+            }
+        }
     }
 
     void dispatch(const std::string* connId, const std::string& botId, const json& event) {
@@ -289,6 +335,10 @@ private:
         }
     }
 
+    std::mutex errMu_;
+    std::vector<std::string> pendingErrors_;
+    bool flushScheduled_ = false;
+    std::time_t lastFlush_ = 0;
     mutable std::mutex mu_;
     Config config_;
     std::shared_ptr<Store> store_;

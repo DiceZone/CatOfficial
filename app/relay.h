@@ -71,9 +71,7 @@ public:
             self->say(LogLevel::warn, "离线：" + reason);
             if (self->hooks_.state) self->hooks_.state(false, reason);
         };
-        auto log = log_;
-        const auto prefix = "官方机器人「" + config_.name + "」：";
-        handlers.log = [log, prefix](LogLevel level, const std::string& message) { if (log) log(level, prefix + message); };
+        handlers.log = [weak](LogLevel level, const std::string& message) { if (auto self = weak.lock()) self->say(level, message); };
         bot_ = Bot::create(std::move(options), std::move(handlers));
     }
 
@@ -87,6 +85,19 @@ public:
     std::shared_ptr<Store> store() const { return store_; }
     const BotConfig& config() const { return config_; }
     const std::string& id() const { return config_.id; }
+
+    /// 不需要重连的设置（名称、自动回应互动）就地更新。
+    void update(const BotConfig& next) {
+        std::lock_guard lock(nameMu_);
+        name_ = next.name;
+        autoAck_ = next.autoAckInteractions;
+    }
+    /// 显示名：用户起的名字；没起时用机器人昵称；再没有用 AppID。
+    std::string displayName() const {
+        { std::lock_guard lock(nameMu_); if (!name_.empty()) return name_; }
+        const auto nick = bot_ ? bot_->username() : std::string();
+        return nick.empty() ? config_.appId : nick;
+    }
     uint64_t received() const { return received_.load(); }
     uint64_t sent() const { return sent_.load(); }
 
@@ -94,9 +105,17 @@ public:
     json overview() {
         std::string error;
         { std::lock_guard lock(errorMu_); error = lastError_; }
-        return json{{"configured", configured()}, {"online", bot_->online()}, {"self_id", selfId()}, {"nickname", bot_->username()},
+        return json{{"configured", configured()}, {"online", bot_->online()}, {"self_id", selfId()}, {"nickname", bot_->username()}, {"display_name", displayName()},
                     {"avatar", bot_->avatar()}, {"app_id", config_.appId}, {"mode", config_.webhook ? "webhook" : "websocket"},
                     {"received", received_.load()}, {"sent", sent_.load()}, {"error", bot_->online() ? std::string() : error}};
+    }
+
+    /// 主动私聊（运行异常通知主人用）。
+    void sendPrivateText(const std::string& openId, const std::string& text) {
+        bot_->sendText(Bot::Target{Scene::direct, openId}, text, std::string(), [weak = weak_from_this()](json r) {
+            auto self = weak.lock();
+            if (self && !r.value("ok", false)) self->say(LogLevel::warn, "通知主人失败：" + r.value("message", std::string()));
+        });
     }
 
     /// 被动回复一条收到的消息（.bind 等内部指令用）。
@@ -208,7 +227,7 @@ public:
 private:
     struct Peer { Scene scene = Scene::none; std::string id; };
 
-    void say(LogLevel level, const std::string& message) const { if (log_) log_(level, "官方机器人「" + config_.name + "」：" + message); }
+    void say(LogLevel level, const std::string& message) const { if (log_) log_(level, "官方机器人「" + displayName() + "」：" + message); }
 
     json status() const { return json{{"online", bot_->online()}, {"good", bot_->online()}}; }
 
@@ -351,7 +370,9 @@ private:
                 ev["interaction_id"] = n.interactionId;
                 ev["interaction_type"] = n.interactionType;
                 ev["button_data"] = protocol::text(protocol::object(n.interactionData, "resolved"), "button_data");
-                if (config_.autoAckInteractions && !n.interactionId.empty())
+                bool ack;
+                { std::lock_guard lock(nameMu_); ack = autoAck_; }
+                if (ack && !n.interactionId.empty())
                     bot_->call(drogon::Put, "/interactions/" + n.interactionId, json{{"code", 0}}, [](json) {});
             }
         }
@@ -455,7 +476,7 @@ private:
         m.peer = job.peerOpenId;
         m.time = std::time(nullptr);
         m.self = true;
-        m.message = job.segments;
+        m.message = onebot::withoutInlineData(job.segments);
         const auto id = store_->rememberMessage(m);
         if (!job.firstId) job.firstId = id;
         // 机器人自己发出的消息，供开启了「上报自身消息」的连接使用。
@@ -687,6 +708,9 @@ private:
     std::shared_ptr<Store> store_;
     Logger log_;
     Hooks hooks_;
+    mutable std::mutex nameMu_;
+    std::string name_ = config_.name;
+    bool autoAck_ = config_.autoAckInteractions;
     std::shared_ptr<Bot> bot_;
     std::mutex errorMu_;
     std::string lastError_;

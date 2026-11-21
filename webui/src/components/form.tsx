@@ -1,6 +1,7 @@
 // 各页共用的表单小部件。
 
-import type React from 'react';
+import React from 'react';
+import { X } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -63,4 +64,35 @@ export function StatusDot({ tone }: { tone: 'ok' | 'warn' | 'off' }) {
 
 export function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
+}
+
+/// 标签输入：输入后按回车或离开输入框即变成一个标签。
+export function TagInput({ values, onChange, placeholder, validate }: {
+  values: string[]; onChange: (v: string[]) => void; placeholder?: string; validate?: (v: string) => boolean;
+}) {
+  const [text, setText] = React.useState('');
+  const commit = () => {
+    const parts = text.split(/[\s,，;；]+/).map((p) => p.trim()).filter(Boolean);
+    if (!parts.length) return;
+    const next = [...values];
+    for (const p of parts) if (!next.includes(p) && (!validate || validate(p))) next.push(p);
+    onChange(next);
+    setText('');
+  };
+  return (
+    <div className="flex min-h-10 flex-wrap items-center gap-1.5 rounded-md border border-input bg-card px-2 py-1.5 focus-within:ring-2 focus-within:ring-ring">
+      {values.map((v) => (
+        <span key={v} className="inline-flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-2.5 pr-1 text-sm text-primary">
+          {v}
+          <button type="button" aria-label={v} className="rounded-full p-0.5 hover:bg-primary/20" onClick={() => onChange(values.filter((x) => x !== v))}><X className="h-3 w-3" /></button>
+        </span>
+      ))}
+      <input className="min-w-[10rem] flex-1 bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground"
+        value={text} placeholder={values.length ? '' : placeholder} onChange={(e) => setText(e.target.value)} onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(); }
+          else if (e.key === 'Backspace' && !text && values.length) onChange(values.slice(0, -1));
+        }} />
+    </div>
+  );
 }

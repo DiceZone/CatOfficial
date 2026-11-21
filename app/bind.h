@@ -38,6 +38,7 @@ public:
 
     /// 有没有接入原 QQ 机器人（没有时暗号绑定不可用）。
     void setLegacyAvailable(bool available) { legacyAvailable_ = available; }
+    void setMasterCheck(std::function<bool(const std::string& botId, const std::string& openId)> check) { isMaster_ = std::move(check); }
 
     static std::string mask(int64_t qq) {
         auto s = std::to_string(qq);
@@ -63,12 +64,14 @@ public:
     }
 
     /// 官方机器人收到的消息。是绑定指令时处理并返回 true。
-    bool onOfficial(const event::MessageEvent& e, Reply reply) {
+    bool onOfficial(const std::string& botId, const event::MessageEvent& e, Reply reply) {
         if (!config_.enabled) return false;
         const auto args = parse(e.content);
         if (!args) return false;
         const auto [verb, rest] = split(*args);
-        if (verb.empty() || verb == "help") reply(help());
+        const bool master = isMaster_ && isMaster_(botId, e.senderId);
+        if (verb.empty() || verb == "help") reply(help(master));
+        else if (verb == "group") reply(master ? bindGroup(e, rest) : "只有主人可以直接关联群号");
         else if (verb == "status") reply(status(e));
         else if (verb == "remove") reply(remove(e));
         else if (verb == "email") requestCode(e, rest, std::move(reply));
@@ -91,7 +94,7 @@ public:
         submit(std::move(p));
     }
 
-    std::string help() const {
+    std::string help(bool master = false) const {
         const auto& c = config_.command;
         std::string text = "官民绑定 " + c + "\n";
         if (legacyAvailable_) text += c + " <暗号> // 在官方机器人与原机器人都在的群里发送，两边同时收到即完成绑定\n";
@@ -99,8 +102,9 @@ public:
             text += c + " email <QQ号> // 把验证码发到该 QQ 的邮箱\n";
             text += c + " code <验证码> // 用邮件里的验证码完成绑定\n";
         }
-        text += c + " status // 查看当前绑定\n";
+        text += c + " status // 查看当前绑定与你的 OpenID\n";
         text += c + " remove // 解除你的绑定";
+        if (master) text += "\n" + c + " group <群号> // （主人）把本群直接关联到群号";
         return text;
     }
 
@@ -130,6 +134,17 @@ private:
     void say(LogLevel level, const std::string& message) const { if (log_) log_(level, "官民绑定：" + message); }
     bool emailAvailable() const { return config_.emailEnabled && mailer_ && mailer_->usable(); }
 
+    std::string bindGroup(const event::MessageEvent& e, const std::string& number) {
+        if (e.scene != event::Scene::group) return "请在要关联的群里发送";
+        if (number.size() < 5 || number.size() > 12 || number.find_first_not_of("0123456789") != std::string::npos)
+            return "请写上群号，例如：" + config_.command + " group 12345678";
+        const auto group = std::stoll(number);
+        if (!store_->bind(Kind::group, e.targetId, group)) return "群号 " + number + " 已关联到另一个官方群";
+        store_->clearGroupVotes(e.targetId);
+        say(LogLevel::info, "主人把群 " + e.targetId + " 关联到群号 " + number);
+        return "本群已关联群号 " + number;
+    }
+
     std::string status(const event::MessageEvent& e) {
         std::string text;
         if (const auto qq = store_->boundNumber(Kind::user, e.senderId)) text = "你已关联 QQ " + mask(*qq);
@@ -138,7 +153,7 @@ private:
             if (const auto g = store_->boundNumber(Kind::group, e.targetId)) text += "；本群已关联群号 " + std::to_string(*g);
             else text += "；本群还没有关联群号";
         }
-        return text;
+        return text + "\n你的 OpenID：" + e.senderId;
     }
 
     std::string remove(const event::MessageEvent& e) {
@@ -319,6 +334,7 @@ private:
     std::shared_ptr<Mailer> mailer_;
     Logger log_;
     std::atomic<bool> legacyAvailable_{false};
+    std::function<bool(const std::string&, const std::string&)> isMaster_;
     std::mutex mu_;
     std::deque<Pending> pending_;
     uint64_t nextId_ = 0;

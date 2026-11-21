@@ -23,12 +23,22 @@ struct BotConfig {
     std::string type = "official";    // official / onebot
     // official
     std::string appId, appSecret;
-    bool webhook = false;              // false：WebSocket（官方文档称 Gateway）
+    bool webhook = false;              // false：WebSocket 方式；true：Webhook 方式（官方文档的两种事件接收方式）
     bool subscribeGroupMemberEvents = false;
     bool autoAckInteractions = true;
-    // onebot（CatOfficial 以客户端身份连它的正向 WebSocket）
+    // onebot：reverse 为反向 WebSocket（它连 CatOfficial 的 host:port），forward 为正向（CatOfficial 连它的 url）
+    std::string connection = "reverse";
+    std::string host = "127.0.0.1";
+    uint16_t port = 0;
     std::string url, token;
     bool official() const { return type == "official"; }
+    bool reverse() const { return connection == "reverse"; }
+    /// 重连才能生效的字段变了没有（名称、自动回应互动等可以就地更新）。
+    bool sameConnection(const BotConfig& o) const {
+        return type == o.type && enabled == o.enabled && appId == o.appId && appSecret == o.appSecret && webhook == o.webhook
+            && subscribeGroupMemberEvents == o.subscribeGroupMemberEvents && connection == o.connection && host == o.host
+            && port == o.port && url == o.url && token == o.token;
+    }
 };
 
 struct ConnectionConfig {
@@ -58,8 +68,9 @@ struct SmtpConfig {
     std::string host;
     uint16_t port = 465;
     std::string security = "ssl";      // ssl / starttls / none
-    std::string username, password, from, ownerEmail;
-    bool notifyOffline = true;
+    std::string username, password, from;
+    std::vector<std::string> notifyEmails;   // 运行异常时通知的邮箱
+    bool notifyErrors = true;
     bool usable() const { return enabled && !host.empty() && !from.empty(); }
 };
 
@@ -73,13 +84,23 @@ struct BindConfig {
     int codeTtlMinutes = 10;
 };
 
+/// 主人：某个官方机器人（为空表示全部）上的 OpenID。
+struct MasterConfig {
+    std::string botId;
+    std::string openId;
+};
+
 struct Config {
     std::vector<BotConfig> bots;
     std::vector<ConnectionConfig> connections;
+    std::vector<MasterConfig> masters;
+    bool notifyMasters = true;         // 运行异常时也私聊通知主人
 
-    std::string webhookHost = "0.0.0.0";
-    uint16_t webhookPort = 0;          // 0 表示不开 Webhook 入口
+    // 官方 Webhook 入口：默认挂在管理面板的端口上；standalone 时单独监听 webhookPort。
     std::string webhookPath = "/webhook/qqbot";
+    bool webhookStandalone = false;
+    std::string webhookHost = "0.0.0.0";
+    uint16_t webhookPort = 8443;
 
     SmtpConfig smtp;
     BindConfig bind;
@@ -98,6 +119,10 @@ struct Config {
         for (const auto& b : bots) if (b.id == id) return &b;
         return nullptr;
     }
+    bool isMaster(const std::string& botId, const std::string& openId) const {
+        for (const auto& m : masters) if (m.openId == openId && (m.botId.empty() || m.botId == botId)) return true;
+        return false;
+    }
 };
 
 inline const char* kConfigTemplate = R"({
@@ -106,8 +131,10 @@ inline const char* kConfigTemplate = R"({
     { "id": "http", "name": "HTTP API", "enabled": true, "type": "http_server", "host": "127.0.0.1", "port": 5700, "token": "", "message_format": "array", "report_self": false, "bots": [] },
     { "id": "ws", "name": "正向 WebSocket", "enabled": true, "type": "ws_server", "host": "127.0.0.1", "port": 6700, "token": "", "message_format": "array", "report_self": false, "heartbeat_interval": 30000, "bots": [] }
   ],
-  "webhook": { "host": "0.0.0.0", "port": 0, "path": "/webhook/qqbot" },
-  "smtp": { "enabled": false, "host": "", "port": 465, "security": "ssl", "username": "", "password": "", "from": "", "owner_email": "", "notify_offline": true },
+  "masters": [],
+  "notify_masters": true,
+  "webhook": { "path": "/webhook/qqbot", "standalone": false, "host": "0.0.0.0", "port": 8443 },
+  "smtp": { "enabled": false, "host": "", "port": 465, "security": "ssl", "username": "", "password": "", "from": "", "notify_emails": [], "notify_errors": true },
   "bind": { "enabled": true, "command": ".bind", "window_seconds": 5, "group_confirm_users": 3, "email_enabled": true, "email_domain": "qq.com", "code_ttl_minutes": 10 },
   "webui": { "enabled": true, "host": "127.0.0.1", "port": 18082, "password": "", "root": "web" },
   "data_dir": "data",
@@ -148,8 +175,8 @@ inline nlohmann::json migrateConfig(nlohmann::json j) {
         connections.push_back(json{{"id", "conn" + std::to_string(++n)}, {"name", "反向 WebSocket"}, {"enabled", true}, {"type", "ws_client"},
             {"url", r.value("url", std::string())}, {"token", token}, {"message_format", format}, {"heartbeat_interval", heartbeat},
             {"reconnect_interval", r.value("reconnect_interval", 3000)}, {"bots", json::array()}});
-    // 旧模板里 webhook.port 有默认值，但只在 webhook 模式下才用；新格式里端口不为 0 就会监听。
-    if (bot.value("mode", std::string("gateway")) != "webhook" && j.contains("webhook") && j["webhook"].is_object()) j["webhook"]["port"] = 0;
+    // 旧版 webhook 单独监听端口；新格式默认挂在面板端口上，旧配置用了 webhook 时保持独立端口。
+    if (j.contains("webhook") && j["webhook"].is_object()) j["webhook"]["standalone"] = bot.value("mode", std::string()) == "webhook";
     j.erase("bot");
     j.erase("onebot");
     j["bots"] = bots;
@@ -176,22 +203,36 @@ inline Config parseConfig(const nlohmann::json& input) {
         bot.autoAckInteractions = b.value("auto_ack_interactions", true);
         bot.url = b.value("url", std::string());
         bot.token = b.value("token", std::string());
+        // 旧配置只有 url（正向）；新配置默认反向
+        bot.connection = b.value("connection", std::string(b.contains("url") && !b.contains("port") ? "forward" : "reverse"));
+        bot.host = b.value("host", bot.host);
+        bot.port = b.value("port", static_cast<uint16_t>(0));
         if (bot.id.empty() || !ids.insert(bot.id).second) throw std::runtime_error("bots 里的 id 不能为空或重复");
         if (bot.type != "official" && bot.type != "onebot") throw std::runtime_error("机器人类型只能是 official 或 onebot");
-        if (bot.type == "onebot" && bot.url.rfind("ws://", 0) != 0 && bot.url.rfind("wss://", 0) != 0)
-            throw std::runtime_error("OneBot 机器人「" + bot.name + "」的地址须以 ws:// 或 wss:// 开头");
+        const auto label = "OneBot 机器人「" + (bot.name.empty() ? bot.id : bot.name) + "」";
+        if (bot.type == "onebot") {
+            if (bot.connection != "reverse" && bot.connection != "forward") throw std::runtime_error(label + "的连接方式只能是 reverse 或 forward");
+            if (!bot.reverse() && bot.url.rfind("ws://", 0) != 0 && bot.url.rfind("wss://", 0) != 0)
+                throw std::runtime_error(label + "的地址须以 ws:// 或 wss:// 开头");
+            if (bot.reverse() && bot.port == 0) throw std::runtime_error(label + "需要监听端口");
+        }
         c.bots.push_back(bot);
     }
 
+    for (const auto& m : j.value("masters", json::array())) {
+        MasterConfig master{m.value("bot_id", std::string()), m.value("openid", std::string())};
+        if (!master.openId.empty()) c.masters.push_back(master);
+    }
+    c.notifyMasters = j.value("notify_masters", true);
+
     const auto webhook = j.value("webhook", json::object());
     c.webhookHost = webhook.value("host", c.webhookHost);
-    c.webhookPort = webhook.value("port", static_cast<uint16_t>(0));
+    c.webhookPort = webhook.value("port", c.webhookPort);
     c.webhookPath = webhook.value("path", c.webhookPath);
+    // 旧格式没有 standalone：端口不为 0 视为独立端口
+    c.webhookStandalone = webhook.value("standalone", webhook.contains("port") && !webhook.contains("standalone") && c.webhookPort != 0);
     if (c.webhookPath.empty() || c.webhookPath[0] != '/' || c.webhookPath.find('/', 1) == std::string::npos)
         throw std::runtime_error("webhook.path 须以 / 开头且至少两段（如 /webhook/qqbot），以免与 HTTP 动作路径冲突");
-    for (const auto& b : c.bots)
-        if (b.enabled && b.official() && b.webhook && c.webhookPort == 0)
-            throw std::runtime_error("机器人「" + b.name + "」使用 Webhook 接收，需要在设置中填写 Webhook 端口");
 
     std::set<std::string> connIds;
     std::set<uint16_t> ports;
@@ -235,8 +276,9 @@ inline Config parseConfig(const nlohmann::json& input) {
     c.smtp.username = smtp.value("username", std::string());
     c.smtp.password = smtp.value("password", std::string());
     c.smtp.from = smtp.value("from", std::string());
-    c.smtp.ownerEmail = smtp.value("owner_email", std::string());
-    c.smtp.notifyOffline = smtp.value("notify_offline", true);
+    for (const auto& e : smtp.value("notify_emails", json::array())) if (e.is_string() && !e.get<std::string>().empty()) c.smtp.notifyEmails.push_back(e.get<std::string>());
+    if (const auto owner = smtp.value("owner_email", std::string()); !owner.empty() && c.smtp.notifyEmails.empty()) c.smtp.notifyEmails.push_back(owner);   // 旧字段
+    c.smtp.notifyErrors = smtp.value("notify_errors", smtp.value("notify_offline", true));
     if (c.smtp.security != "ssl" && c.smtp.security != "starttls" && c.smtp.security != "none")
         throw std::runtime_error("smtp.security 只能是 ssl、starttls 或 none");
 
@@ -259,8 +301,14 @@ inline Config parseConfig(const nlohmann::json& input) {
     c.webuiPassword = webui.value("password", std::string());
     c.webuiRoot = webui.value("root", c.webuiRoot);
     if (c.webuiEnabled && c.webuiPort == 0) throw std::runtime_error("webui.port 不能为 0");
-    if (c.webuiEnabled && ports.count(c.webuiPort)) throw std::runtime_error("webui.port 不能与 OneBot 连接的端口相同");
-    if (c.webhookPort && ports.count(c.webhookPort)) throw std::runtime_error("Webhook 端口不能与 OneBot 连接的端口相同");
+    for (const auto& b : c.bots)
+        if (b.enabled && b.type == "onebot" && b.reverse() && !ports.insert(b.port).second)
+            throw std::runtime_error("OneBot 机器人「" + (b.name.empty() ? b.id : b.name) + "」的端口与其他连接重复");
+    if (c.webuiEnabled && ports.count(c.webuiPort)) throw std::runtime_error("面板端口不能与 OneBot 连接或机器人的端口相同");
+    if (c.webhookStandalone) {
+        if (c.webhookPort == 0) throw std::runtime_error("Webhook 独立端口不能为 0");
+        if (ports.count(c.webhookPort) || (c.webuiEnabled && c.webhookPort == c.webuiPort)) throw std::runtime_error("Webhook 独立端口与其他端口重复");
+    }
 
     c.dataDir = j.value("data_dir", c.dataDir);
     c.logLevel = j.value("log_level", c.logLevel);

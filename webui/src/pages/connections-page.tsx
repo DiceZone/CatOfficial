@@ -12,15 +12,15 @@ import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, Dia
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { PageHeader } from '@/components/page-header';
 import { CardGrid, Choice, EmptyState, Field, StatusDot, Toggle, digits, errorText } from '@/components/form';
-import { api, type Bot, type Connection, type ConnectionType } from '@/lib/api';
+import { api, botLabel, type Bot, type Connection, type ConnectionType } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { currentLocale } from '@/i18n';
 import { formatTime } from '@/lib/utils';
 
 const TYPES: { type: ConnectionType; icon: React.ComponentType<{ className?: string }> }[] = [
   { type: 'http_server', icon: Server },
-  { type: 'ws_server', icon: Plug },
   { type: 'http_client', icon: Send },
+  { type: 'ws_server', icon: Plug },
   { type: 'ws_client', icon: Globe },
 ];
 const iconOf = (type: ConnectionType) => TYPES.find((x) => x.type === type)?.icon ?? Plug;
@@ -105,13 +105,13 @@ function ConnectionCard({ conn, bots, onEdit, onDelete, onToggle }: {
         </dl>
         {reverseErrors.length > 0 && (
           <p className="break-all rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
-            {reverseErrors.map(([id, s]) => `${officials.find((b) => b.id === id)?.name ?? id}：${s.error}`).join('；')}
+            {reverseErrors.map(([id, s]) => { const b = officials.find((x) => x.id === id); return `${b ? botLabel(b) : id}：${s.error}`; }).join('；')}
           </p>
         )}
 
         <div className="mt-auto flex items-center justify-between gap-3 border-t pt-4">
           <div className="flex min-w-0 flex-wrap gap-1.5">
-            {served ? served.map((b) => <Badge key={b.id} variant="neutral">{b.name}</Badge>) : <Badge variant="info">{t('connections.bots_all')}</Badge>}
+            {served ? served.map((b) => <Badge key={b.id} variant="neutral">{botLabel(b)}</Badge>) : <Badge variant="info">{t('connections.bots_all')}</Badge>}
             {conn.report_self && <Badge variant="neutral">message_sent</Badge>}
           </div>
           <label className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
@@ -174,7 +174,7 @@ function ConnectionForm({ draft, onChange, bots }: { draft: Partial<Connection>;
           {officials.map((b) => (
             <button key={b.id} type="button" onClick={() => toggleBot(b.id)} aria-pressed={selected.has(b.id)}
               className={cn('rounded-full border px-3 py-1 text-sm transition-colors', selected.has(b.id) ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent')}>
-              {b.name}
+              {botLabel(b)}
             </button>
           ))}
         </div>
