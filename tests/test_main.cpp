@@ -1,5 +1,7 @@
 // CatOfficial 单元测试：不连网，只测转换、存储与事件分派。
 
+#include "../app/bind.h"
+#include "../app/config.h"
 #include "../app/onebot.h"
 #include "../app/relay.h"
 #include "../app/store.h"
@@ -159,12 +161,13 @@ TEST(BotDeduplicatesAndRemembersPassiveEvents) {
 TEST(RelayEmitsOneBotMessageEvents) {
     const auto path = tempDb("relay");
     auto store = std::make_shared<Store>(utf8(path));
-    Config cfg; cfg.appId = "APP"; cfg.appSecret = "SECRET";
-    auto relay = std::make_shared<Relay>(cfg, store, nullptr);
+    BotConfig cfg; cfg.id = "b1"; cfg.name = "测试"; cfg.appId = "APP"; cfg.appSecret = "SECRET";
+    std::vector<json> events;
+    Relay::Hooks hooks;
+    hooks.emit = [&](const json& e) { events.push_back(e); };
+    auto relay = std::make_shared<Relay>(cfg, store, nullptr, hooks);
     relay->init();
     relay->bot()->setIdentityForTest("BOT", "3889000000");
-    std::vector<json> events;
-    relay->addSink([&](const json& e) { events.push_back(e); });
     relay->bot()->dispatch("GROUP_AT_MESSAGE_CREATE",
         json{{"id", "gm1"}, {"content", " .r"}, {"group_openid", "G1"}, {"author", {{"member_openid", "U1"}, {"member_role", "admin"}}}}, "e1");
     CHECK_EQ(events.size(), std::size_t(1));
@@ -222,6 +225,81 @@ TEST(RelayEmitsOneBotMessageEvents) {
     CHECK_EQ(events[1]["post_type"].get<std::string>(), std::string("request"));
     CHECK_EQ(events[1]["flag"].get<std::string>(), std::string("G1|U9|R1"));
     CHECK_EQ(events[1]["comment"].get<std::string>(), std::string("我是希亚"));
+}
+
+TEST(OldConfigMigratesToBotsAndConnections) {
+    const auto old = json::parse(R"({"bot":{"app_id":"A","app_secret":"S"},"onebot":{"access_token":"T","message_format":"string",
+        "servers":[{"type":"http","host":"127.0.0.1","port":5700}],"http_post":[{"url":"http://x/","secret":"K"}],
+        "ws_reverse":[{"url":"ws://y/ws"}]}})");
+    const auto c = parseConfig(old);
+    CHECK_EQ(c.bots.size(), std::size_t(1));
+    CHECK_EQ(c.bots[0].appId, std::string("A"));
+    CHECK_EQ(c.connections.size(), std::size_t(3));
+    CHECK_EQ(c.connections[0].type, std::string("http_server"));
+    CHECK_EQ(c.connections[0].token, std::string("T"));
+    CHECK_EQ(c.connections[1].token, std::string("K"));
+    CHECK_EQ(c.connections[2].type, std::string("ws_client"));
+    CHECK_EQ(c.connections[2].messageFormat, std::string("string"));
+    CHECK_EQ(c.webuiPort, uint16_t(18082));
+}
+
+TEST(ConfigRejectsDuplicatePortsAndBadUrls) {
+    bool threw = false;
+    try { parseConfig(json::parse(R"({"connections":[{"id":"a","type":"ws_server","port":6700},{"id":"b","type":"http_server","port":6700}]})")); }
+    catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+    threw = false;
+    try { parseConfig(json::parse(R"({"bots":[{"id":"x","type":"onebot","url":"http://nope"}]})")); }
+    catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+}
+
+TEST(BindCommandPairsOfficialAndLegacySides) {
+    const auto path = tempDb("bind");
+    auto store = std::make_shared<Store>(utf8(path));
+    BindConfig cfg; cfg.groupConfirmUsers = 2;
+    auto service = std::make_shared<BindService>(cfg, store, nullptr, nullptr);
+    service->setLegacyAvailable(true);
+    CHECK(service->parse(".bind 暗号").has_value());
+    CHECK(service->parse("\xE3\x80\x82" "BIND 暗号").has_value());
+    CHECK(!service->parse(".binder").has_value());
+
+    auto official = [](const std::string& user, const std::string& text) {
+        return *event::parseMessage("GROUP_MESSAGE_CREATE", json{{"id", "m-" + user + text}, {"content", text}, {"group_openid", "GOPEN"},
+            {"author", {{"member_openid", user}}}}, "e", "BOT", "APP");
+    };
+    std::vector<std::string> replies;
+    auto reply = [&](const std::string& t) { replies.push_back(t); };
+
+    // 普通成员：用户绑定，群还差一票。
+    CHECK(service->onOfficial(official("U1", ".bind 甲乙丙"), reply));
+    service->onLegacy(LegacyMessage{"legacy", 778899, 123456, "member", ".bind 甲乙丙"});
+    CHECK_EQ(store->number(Kind::user, "U1"), int64_t(123456));
+    CHECK(!store->bound(Kind::group, "GOPEN"));
+    CHECK_EQ(replies.size(), std::size_t(1));
+    CHECK(replies[0].find("还需要 1 位") != std::string::npos);
+
+    // 第二位成员（原机器人那边先到）：够票，群关联。
+    service->onLegacy(LegacyMessage{"legacy", 778899, 654321, "member", ".bind 丁戊"});
+    CHECK(service->onOfficial(official("U2", ".bind 丁戊"), reply));
+    CHECK_EQ(store->number(Kind::user, "U2"), int64_t(654321));
+    CHECK_EQ(store->number(Kind::group, "GOPEN"), int64_t(778899));
+
+    // 同一暗号同一侧出现两次：作废并提示。
+    replies.clear();
+    CHECK(service->onOfficial(official("U3", ".bind 撞了"), reply));
+    CHECK(service->onOfficial(official("U4", ".bind 撞了"), reply));
+    CHECK_EQ(replies.size(), std::size_t(2));
+    CHECK(replies[0].find("同一个暗号") != std::string::npos);
+
+    // 状态与解绑。
+    replies.clear();
+    CHECK(service->onOfficial(official("U1", ".bind status"), reply));
+    CHECK(replies.back().find("12**56") != std::string::npos);
+    CHECK(service->onOfficial(official("U1", ".bind remove"), reply));
+    CHECK(!store->bound(Kind::user, "U1"));
+    // 普通消息不拦截。
+    CHECK(!service->onOfficial(official("U1", "你好"), reply));
 }
 
 }  // namespace

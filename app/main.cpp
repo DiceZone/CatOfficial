@@ -1,13 +1,16 @@
 // CatOfficial：把 QQ 官方机器人中继成标准 OneBot V11。
-// 用法：catofficial [配置文件路径]，默认读取当前目录的 config.json；不存在时生成模板。
+// 用法：catofficial [配置文件路径]，默认读取当前目录的 config.json；不存在时生成并照常启动，
+// 可以在管理面板里添加机器人与连接。
 
 #include "config.h"
+#include "hub.h"
+#include "logbuf.h"
 #include "paths.h"
-#include "relay.h"
 #include "server.h"
 #include "store.h"
 #include "webui.h"
 
+#include <curl/curl.h>
 #include <drogon/drogon.h>
 
 #include <chrono>
@@ -48,6 +51,7 @@ catofficial::Logger makeLogger(int minimum) {
     auto mu = std::make_shared<std::mutex>();
     return [mu, minimum](catofficial::LogLevel level, const std::string& message) {
         if (levelRank(level) < minimum) return;
+        catofficial::app::LogBuffer::get().push(level, message);
         const auto now = std::chrono::system_clock::now();
         const std::time_t t = std::chrono::system_clock::to_time_t(now);
         std::tm tm{};
@@ -67,6 +71,7 @@ catofficial::Logger makeLogger(int minimum) {
 /// 面板请求重启：等端口释放后以相同参数重新启动自己。
 void relaunch(char** argv) {
 #ifdef _WIN32
+    (void)argv;
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring command = GetCommandLineW();
@@ -92,52 +97,59 @@ int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
 #endif
     namespace fs = std::filesystem;
+    using namespace catofficial::app;
     // 由面板重启时，等上一个进程释放端口。
     if (const char* restarted = std::getenv("CATOFFICIAL_RESTARTED"); restarted && std::string(restarted) == "1")
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    curl_global_init(CURL_GLOBAL_DEFAULT);
     std::error_code ec;
-    const fs::path configPath = fs::absolute(catofficial::app::fromUtf8(argc > 1 ? argv[1] : "config.json"), ec);
+    const fs::path configPath = fs::absolute(fromUtf8(argc > 1 ? argv[1] : "config.json"), ec);
     if (!fs::exists(configPath)) {
-        std::ofstream(configPath, std::ios::binary) << catofficial::app::kConfigTemplate;
-        std::cout << "已生成配置文件 " << catofficial::app::utf8(configPath) << "。" << std::endl;
+        std::ofstream(configPath, std::ios::binary) << kConfigTemplate;
+        std::cout << "已生成配置文件 " << utf8(configPath) << "。" << std::endl;
     }
 
-    catofficial::app::Config config;
+    Config config;
     try {
         std::ifstream in(configPath, std::ios::binary);
-        config = catofficial::app::parseConfig(nlohmann::json::parse(in));
+        config = parseConfig(nlohmann::json::parse(in));
     } catch (const std::exception& e) {
         std::cerr << "读取配置失败：" << e.what() << std::endl;
         return 1;
     }
 
     const auto log = makeLogger(configRank(config.logLevel));
-    const bool newPassword = catofficial::app::WebUi::ensurePassword(configPath, config);
-    fs::path dataDir = catofficial::app::fromUtf8(config.dataDir);
+    const bool newPassword = WebUi::ensurePassword(configPath, config);
+    fs::path dataDir = fromUtf8(config.dataDir);
     if (dataDir.is_relative()) dataDir = configPath.parent_path() / dataDir;
     fs::create_directories(dataDir, ec);
 
-    std::shared_ptr<catofficial::app::Store> store;
+    std::shared_ptr<Store> store;
     try {
-        store = std::make_shared<catofficial::app::Store>(catofficial::app::utf8(dataDir / "catofficial.db"));
+        store = std::make_shared<Store>(utf8(dataDir / "catofficial.db"));
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
         return 1;
     }
 
-    auto relay = std::make_shared<catofficial::app::Relay>(config, store, log);
-    relay->init();
-    relay->loadBindings(dataDir / "bindings.json");
-    catofficial::app::Server::setup(relay);
-    catofficial::app::WebUi::setup(configPath, relay);
+    auto hub = std::make_shared<Hub>(config, store, log);
+    hub->init();
+    hub->loadBindings(dataDir / "bindings.json");
+    Server::setup(hub);
+    WebUi::setup(configPath, dataDir, hub);
 
-    log(catofficial::LogLevel::info, std::string("CatOfficial ") + catofficial::app::kVersion + " 启动中");
-    for (const auto& l : config.listeners)
-        log(catofficial::LogLevel::info, "OneBot " + std::string(l.type == "http" ? "HTTP API" : "正向 WebSocket") + "：" + l.host + ":" + std::to_string(l.port));
-    for (const auto& p : config.httpPost) log(catofficial::LogLevel::info, "OneBot HTTP POST 上报：" + p.url);
-    for (const auto& w : config.wsReverse) log(catofficial::LogLevel::info, "OneBot 反向 WebSocket：" + w.url);
-    if (config.webhook)
-        log(catofficial::LogLevel::info, "官方事件经 Webhook 接收：" + config.webhookHost + ":" + std::to_string(config.webhookPort) + config.webhookPath);
+    log(catofficial::LogLevel::info, std::string("CatOfficial ") + kVersion + " 启动中");
+    int officials = 0, legacies = 0;
+    for (const auto& b : config.bots) if (b.enabled) (b.official() ? officials : legacies)++;
+    log(catofficial::LogLevel::info, "官方机器人 " + std::to_string(officials) + " 个，原 QQ 机器人 " + std::to_string(legacies) + " 个");
+    if (!officials) log(catofficial::LogLevel::warn, "还没有启用的官方机器人，请在管理面板的「登录管理」里添加");
+    for (const auto& c : config.connections) {
+        if (!c.enabled) continue;
+        const auto where = c.server() ? c.host + ":" + std::to_string(c.port) : c.url;
+        log(catofficial::LogLevel::info, "OneBot 连接「" + c.name + "」（" + c.type + "）：" + where);
+    }
+    if (config.webhookPort)
+        log(catofficial::LogLevel::info, "官方 Webhook 入口：" + config.webhookHost + ":" + std::to_string(config.webhookPort) + config.webhookPath);
     if (config.webuiEnabled) {
         const auto host = config.webuiHost == "0.0.0.0" ? std::string("127.0.0.1") : config.webuiHost;
         log(catofficial::LogLevel::info, "管理面板：http://" + host + ":" + std::to_string(config.webuiPort) + "/");
@@ -147,13 +159,14 @@ int main(int argc, char** argv) {
     }
 
     drogon::app().setLogLevel(trantor::Logger::kWarn).setThreadNum(2);
-    drogon::app().getLoop()->queueInLoop([relay] {
-        relay->start();
-        catofficial::app::Server::startClients();
+    drogon::app().getLoop()->queueInLoop([hub] {
+        hub->start();
+        Server::startClients();
     });
     drogon::app().run();
-    relay->stop();
-    if (catofficial::app::WebUi::restartRequested()) {
+    hub->stop();
+    curl_global_cleanup();
+    if (WebUi::restartRequested()) {
         log(catofficial::LogLevel::info, "正在重启");
         relaunch(argv);
     }

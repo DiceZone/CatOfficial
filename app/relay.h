@@ -1,7 +1,8 @@
 #pragma once
 
-// 中继核心：官方事件 → OneBot 事件，OneBot 动作 → 官方接口。
+// 一个官方机器人的中继：官方事件 → OneBot 事件，OneBot 动作 → 官方接口。
 // 官方能力以外的动作照 OneBot 惯例返回 retcode 1404，不去模拟官方做不到的事。
+// 事件经 Hooks::emit 交给 Hub，由 Hub 分发到服务这个机器人的连接。
 
 #include "config.h"
 #include "onebot.h"
@@ -36,11 +37,17 @@ class Relay : public std::enable_shared_from_this<Relay> {
 public:
     using json = nlohmann::json;
     using Done = std::function<void(json response)>;
-    using Sink = std::function<void(const json& event)>;
     using Scene = event::Scene;
 
-    Relay(Config config, std::shared_ptr<Store> store, Logger log)
-        : config_(std::move(config)), store_(std::move(store)), log_(std::move(log)) {}
+    struct Hooks {
+        std::function<void(const json& event)> emit;
+        /// 返回 true 表示消息已被处理（如 .bind 指令），不再推给 OneBot 应用。
+        std::function<bool(Relay& relay, const event::MessageEvent& e)> intercept;
+        std::function<void(bool online, const std::string& reason)> state;
+    };
+
+    Relay(BotConfig config, std::shared_ptr<Store> store, Logger log, Hooks hooks = {})
+        : config_(std::move(config)), store_(std::move(store)), log_(std::move(log)), hooks_(std::move(hooks)) {}
 
     /// 建立 Bot（需在 drogon 事件循环启动后调用 start）。
     void init() {
@@ -55,10 +62,18 @@ public:
         handlers.notice = [weak](const event::Notice& n) { if (auto self = weak.lock()) self->onNotice(n); };
         handlers.online = [weak] {
             auto self = weak.lock(); if (!self) return;
-            self->say(LogLevel::info, "机器人已上线：" + self->bot_->username() + "（self_id=" + std::to_string(self->selfId()) + "）");
+            self->say(LogLevel::info, "已上线：" + self->bot_->username() + "（self_id=" + std::to_string(self->selfId()) + "）");
+            if (self->hooks_.state) self->hooks_.state(true, {});
         };
-        handlers.offline = [weak](const std::string& reason) { if (auto self = weak.lock()) self->say(LogLevel::warn, "机器人离线：" + reason); };
-        handlers.log = log_;
+        handlers.offline = [weak](const std::string& reason) {
+            auto self = weak.lock(); if (!self) return;
+            { std::lock_guard lock(self->errorMu_); self->lastError_ = reason; }
+            self->say(LogLevel::warn, "离线：" + reason);
+            if (self->hooks_.state) self->hooks_.state(false, reason);
+        };
+        auto log = log_;
+        const auto prefix = "官方机器人「" + config_.name + "」：";
+        handlers.log = [log, prefix](LogLevel level, const std::string& message) { if (log) log(level, prefix + message); };
         bot_ = Bot::create(std::move(options), std::move(handlers));
     }
 
@@ -70,13 +85,28 @@ public:
     void stop() { bot_->stop(); }
     std::shared_ptr<Bot> bot() const { return bot_; }
     std::shared_ptr<Store> store() const { return store_; }
-    const Config& config() const { return config_; }
+    const BotConfig& config() const { return config_; }
+    const std::string& id() const { return config_.id; }
+    uint64_t received() const { return received_.load(); }
+    uint64_t sent() const { return sent_.load(); }
 
     /// 管理面板用的运行状态。
     json overview() {
+        std::string error;
+        { std::lock_guard lock(errorMu_); error = lastError_; }
         return json{{"configured", configured()}, {"online", bot_->online()}, {"self_id", selfId()}, {"nickname", bot_->username()},
                     {"avatar", bot_->avatar()}, {"app_id", config_.appId}, {"mode", config_.webhook ? "webhook" : "gateway"},
-                    {"version", kVersion}, {"started_at", startedAt_}, {"received", received_.load()}, {"sent", sent_.load()}};
+                    {"received", received_.load()}, {"sent", sent_.load()}, {"error", bot_->online() ? std::string() : error}};
+    }
+
+    /// 被动回复一条收到的消息（.bind 等内部指令用）。
+    void replyText(const event::MessageEvent& e, const std::string& text) {
+        const auto scene = e.scene;
+        Bot::Target target{scene, e.targetId};
+        bot_->sendText(target, text, e.id == e.eventId ? std::string() : e.id, [weak = weak_from_this()](json r) {
+            auto self = weak.lock();
+            if (self && !r.value("ok", false)) self->say(LogLevel::warn, "回复失败：" + r.value("message", std::string()));
+        });
     }
     std::string displayName(Kind kind, const std::string& openId) { return store_->name(kind, openId); }
 
@@ -88,29 +118,15 @@ public:
         return id.empty() ? 0 : store_->number(Kind::user, "bot:" + id);
     }
 
-    int addSink(Sink sink) {
-        std::lock_guard lock(sinkMu_);
-        const int id = ++nextSink_;
-        sinks_[id] = std::move(sink);
-        return id;
-    }
-    void removeSink(int id) { std::lock_guard lock(sinkMu_); sinks_.erase(id); }
-
     json lifecycle(const std::string& subType) {
         return json{{"time", std::time(nullptr)}, {"self_id", selfId()}, {"post_type", "meta_event"},
                     {"meta_event_type", "lifecycle"}, {"sub_type", subType}};
     }
-    json heartbeat() {
+    json heartbeat(int interval) {
         return json{{"time", std::time(nullptr)}, {"self_id", selfId()}, {"post_type", "meta_event"},
-                    {"meta_event_type", "heartbeat"}, {"status", status()}, {"interval", config_.heartbeatInterval}};
+                    {"meta_event_type", "heartbeat"}, {"status", status()}, {"interval", interval}};
     }
-    void emit(const json& event) {
-        std::vector<Sink> sinks;
-        { std::lock_guard lock(sinkMu_); for (auto& [id, sink] : sinks_) sinks.push_back(sink); }
-        for (auto& sink : sinks) {
-            try { sink(event); } catch (const std::exception& e) { say(LogLevel::warn, std::string("推送事件失败：") + e.what()); }
-        }
-    }
+    void emit(const json& event) { if (hooks_.emit) hooks_.emit(event); }
 
     /// 头像地址。官方只按 AppID + OpenID 提供用户头像。
     std::string userAvatar(int64_t number, int size = 640) {
@@ -185,39 +201,14 @@ public:
         });
     }
 
-    /// 删除超过保留天数的消息索引。
-    void prune() {
-        if (config_.messageRetentionDays > 0)
-            store_->pruneMessages(static_cast<int64_t>(std::time(nullptr)) - static_cast<int64_t>(config_.messageRetentionDays) * 86400);
-    }
-
     webhook::Reply acceptWebhook(const std::string& timestamp, const std::string& signature, const std::string& raw) {
         return bot_->acceptWebhook(timestamp, signature, raw);
-    }
-
-    /// 读取官民绑定文件：[{"type":"user"|"group","openid":"…","qq":123}]。
-    void loadBindings(const std::filesystem::path& file) {
-        std::ifstream in(file, std::ios::binary);
-        if (!in) return;
-        const auto list = json::parse(in, nullptr, false);
-        if (!list.is_array()) { say(LogLevel::warn, "官民绑定文件不是 JSON 数组，已忽略：" + utf8(file)); return; }
-        int applied = 0;
-        for (const auto& item : list) {
-            if (!item.is_object()) continue;
-            const auto kind = item.value("type", std::string("user")) == "group" ? Kind::group : Kind::user;
-            const auto openId = protocol::text(item, "openid");
-            const auto qq = onebot::number(item.value("qq", json()));
-            if (openId.empty() || !qq) continue;
-            if (store_->bind(kind, openId, *qq)) ++applied;
-            else say(LogLevel::warn, "官民绑定冲突：号码 " + std::to_string(*qq) + " 已对应另一个 OpenID");
-        }
-        say(LogLevel::info, "已载入官民绑定 " + std::to_string(applied) + " 条");
     }
 
 private:
     struct Peer { Scene scene = Scene::none; std::string id; };
 
-    void say(LogLevel level, const std::string& message) const { if (log_) log_(level, message); }
+    void say(LogLevel level, const std::string& message) const { if (log_) log_(level, "官方机器人「" + config_.name + "」：" + message); }
 
     json status() const { return json{{"online", bot_->online()}, {"good", bot_->online()}}; }
 
@@ -288,12 +279,13 @@ private:
         record.time = e.time;
         record.message = segments;
         const auto messageId = store_->rememberMessage(record);
+        if (hooks_.intercept && hooks_.intercept(*this, e)) return;
         const auto raw = onebot::toCq(segments);
         json sender{{"user_id", userId}, {"nickname", nickname(e.senderId)}, {"sex", "unknown"}, {"age", 0}};
         const auto avatar = userAvatar(userId);
         if (!avatar.empty()) sender["avatar"] = avatar;
         json event{{"time", e.time}, {"self_id", self}, {"post_type", "message"}, {"message_id", messageId},
-                   {"user_id", userId}, {"message", config_.messageFormat == "string" ? json(raw) : segments},
+                   {"user_id", userId}, {"message", segments},
                    {"raw_message", raw}, {"font", 0}};
         if (group) {
             const auto groupId = store_->number(Kind::group, peerOpenId);
@@ -466,6 +458,15 @@ private:
         m.message = job.segments;
         const auto id = store_->rememberMessage(m);
         if (!job.firstId) job.firstId = id;
+        // 机器人自己发出的消息，供开启了「上报自身消息」的连接使用。
+        const bool group = job.target.scene != Scene::direct;
+        const auto self = selfId();
+        json sent{{"time", m.time}, {"self_id", self}, {"post_type", "message_sent"}, {"message_id", id}, {"user_id", self},
+                  {"message", job.segments}, {"raw_message", onebot::toCq(job.segments)}, {"font", 0},
+                  {"sender", {{"user_id", self}, {"nickname", bot_->username()}}}};
+        if (group) { sent["message_type"] = "group"; sent["sub_type"] = "normal"; sent["group_id"] = store_->number(Kind::group, job.peerOpenId); }
+        else { sent["message_type"] = "private"; sent["sub_type"] = "friend"; sent["target_id"] = store_->number(Kind::user, job.peerOpenId); }
+        emit(sent);
     }
 
     void finish(const std::shared_ptr<SendJob>& job) {
@@ -527,7 +528,7 @@ private:
         const auto sender = m->self ? selfId() : store_->number(Kind::user, m->sender);
         json data{{"time", m->time}, {"message_type", group ? "group" : "private"}, {"message_id", m->id}, {"real_id", m->id},
                   {"sender", {{"user_id", sender}, {"nickname", m->self ? bot_->username() : nickname(m->sender)}}},
-                  {"message", config_.messageFormat == "string" ? json(onebot::toCq(m->message)) : m->message},
+                  {"message", m->message},
                   {"raw_message", onebot::toCq(m->message)}};
         if (group) data["group_id"] = store_->number(Kind::group, m->peer);
         done(ok(data));
@@ -682,15 +683,15 @@ private:
         });
     }
 
-    Config config_;
+    BotConfig config_;
     std::shared_ptr<Store> store_;
     Logger log_;
+    Hooks hooks_;
     std::shared_ptr<Bot> bot_;
+    std::mutex errorMu_;
+    std::string lastError_;
     std::atomic<uint64_t> received_{0}, sent_{0};
-    std::time_t startedAt_ = std::time(nullptr);
-    std::mutex sinkMu_;
-    std::map<int, Sink> sinks_;
-    int nextSink_ = 0;
+
 };
 
 }  // namespace catofficial::app

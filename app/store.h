@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace catofficial::app {
@@ -65,6 +66,9 @@ public:
         exec("CREATE UNIQUE INDEX IF NOT EXISTS identities_number ON identities(kind, number)");
         // 已分配过的最大号码。号码一旦发出就不再回收，绑定或解绑后空出的号码也不会给别人。
         exec("CREATE TABLE IF NOT EXISTS counters(kind TEXT PRIMARY KEY, last INTEGER NOT NULL)");
+        // 群绑定的确认：普通成员各自完成 .bind 后记一票，够数才关联群号。
+        exec("CREATE TABLE IF NOT EXISTS group_votes(group_open TEXT NOT NULL, real_group INTEGER NOT NULL, qq INTEGER NOT NULL,"
+             " time INTEGER NOT NULL, PRIMARY KEY(group_open, real_group, qq))");
         exec("CREATE TABLE IF NOT EXISTS names(kind TEXT NOT NULL, open_id TEXT NOT NULL, name TEXT NOT NULL,"
              " updated INTEGER NOT NULL, PRIMARY KEY(kind, open_id))");
         exec("CREATE TABLE IF NOT EXISTS members(group_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member',"
@@ -306,6 +310,38 @@ public:
         std::lock_guard lock(mu_);
         Statement s(db_, (std::string("SELECT COUNT(*) FROM ") + table).c_str());
         return s.step() ? sqlite3_column_int64(s.raw(), 0) : 0;
+    }
+
+    /// 记一票，返回这个（官方群, 真实群号）组合目前的票数。
+    int addGroupVote(const std::string& groupOpen, int64_t realGroup, int64_t qq) {
+        std::lock_guard lock(mu_);
+        {
+            Statement s(db_, "INSERT OR IGNORE INTO group_votes(group_open, real_group, qq, time) VALUES(?,?,?,?)");
+            s.bind(1, groupOpen); s.bind(2, realGroup); s.bind(3, qq); s.bind(4, static_cast<int64_t>(std::time(nullptr))); s.run();
+        }
+        Statement s(db_, "SELECT COUNT(*) FROM group_votes WHERE group_open=? AND real_group=?");
+        s.bind(1, groupOpen); s.bind(2, realGroup);
+        return s.step() ? sqlite3_column_int(s.raw(), 0) : 0;
+    }
+    void clearGroupVotes(const std::string& groupOpen) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "DELETE FROM group_votes WHERE group_open=?");
+        s.bind(1, groupOpen); s.run();
+    }
+    /// 等待确认的群：[{group_open, real_group, votes}]
+    std::vector<std::tuple<std::string, int64_t, int>> pendingGroups() {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "SELECT group_open, real_group, COUNT(*) FROM group_votes GROUP BY group_open, real_group ORDER BY MAX(time) DESC");
+        std::vector<std::tuple<std::string, int64_t, int>> out;
+        while (s.step()) out.emplace_back(s.text(0), sqlite3_column_int64(s.raw(), 1), sqlite3_column_int(s.raw(), 2));
+        return out;
+    }
+    std::optional<int64_t> boundNumber(Kind kind, const std::string& openId) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "SELECT number FROM identities WHERE kind=? AND open_id=? AND bound=1");
+        s.bind(1, kindName(kind)); s.bind(2, openId);
+        if (s.step()) return sqlite3_column_int64(s.raw(), 0);
+        return std::nullopt;
     }
 
     /// 删除早于 cutoff 的消息索引。
