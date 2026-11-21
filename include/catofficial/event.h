@@ -40,6 +40,10 @@ struct MessageEvent {
     std::string guildId, channelId;
     std::string role;              // member / admin / owner，其余值丢弃
     std::string groupName;
+    std::string username;          // 发送者昵称（author.username）
+    std::string memberNickname;    // 群消息：发送者的群昵称（author.member_nickname）
+    std::string avatar;            // 发送者头像（author.avatar）
+    std::string unionGroupOpenId;  // 群消息：union_group_openid（绑定了第三方应用时才有效）
     std::string content;           // 群消息已去掉指向本机器人的 <@…> 与首尾空白
     std::vector<Mention> mentions; // 群消息的 mentions，按原顺序
     std::string quotedMessageId;   // message_reference.message_id（旧格式）
@@ -66,6 +70,7 @@ struct Notice {
     std::string interactionScene;
     std::string guildId, channelId;                // GUILD_* / CHANNEL_*
     std::string username, unionOpenId, groupName;  // 事件携带的名称
+    std::string unionGroupOpenId;                  // 入群、退群、成员增减等群事件的 union_group_openid
     std::string dedupKey;
     json data;
 };
@@ -101,6 +106,8 @@ inline std::optional<MessageEvent> parseMessage(const std::string& type, const j
     if (e.id.empty()) e.id = eventId;
     e.time = protocol::eventTime(d, std::time(nullptr));
     e.author = protocol::object(d, "author");
+    e.username = text(e.author, "username");
+    e.avatar = text(e.author, "avatar");
     e.content = text(d, "content");
     e.messageIndex = protocol::sceneValue(d, "msg_idx");
     e.quotedIndex = protocol::sceneValue(d, "ref_msg_idx");
@@ -132,6 +139,8 @@ inline std::optional<MessageEvent> parseMessage(const std::string& type, const j
         e.targetId = text(d, "group_openid");
         e.groupId = text(d, "group_id");
         e.groupName = text(d, "group_name");
+        e.memberNickname = text(e.author, "member_nickname");
+        e.unionGroupOpenId = text(d, "union_group_openid");
         const auto role = text(e.author, "member_role");
         if (role == "member" || role == "admin" || role == "owner") e.role = role;
         // 官方正文会保留 <@OpenID>；若不移除，命令前缀不在首位，例如「@机器人 .r」会被
@@ -247,6 +256,7 @@ inline Notice parseNotice(const std::string& type, const json& data, const std::
     if (n.username.empty()) n.username = text(data, "username");
     n.unionOpenId = text(author, "union_openid");
     n.groupName = text(data, "group_name");
+    n.unionGroupOpenId = text(data, "union_group_openid");
     return n;
 }
 

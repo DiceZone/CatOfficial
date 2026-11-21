@@ -55,10 +55,12 @@ public:
         std::string id;   // 单聊为用户 OpenID，群为 group_openid，频道为 channel_id
     };
 
-    /// 被动回复窗口（官方现行规则）：单聊 60 分钟内 4 次，群聊 5 分钟内 5 次。
+    /// 被动回复窗口（官方文档，2026-11-17 更新）：单聊消息 60 分钟内可回 4 次；群消息 60 分钟内
+    /// 可回 5 次（机器人开发者是群主或管理员时为 50 次，这里无从得知，按 5 次算）。
+    /// 群消息的 msg_id 也可用来私聊回复发送者（须是机器人好友），与群回复共用次数。
     static constexpr std::time_t kDirectReplyWindow = 60 * 60;
     static constexpr int kDirectReplyLimit = 4;
-    static constexpr std::time_t kGroupReplyWindow = 5 * 60;
+    static constexpr std::time_t kGroupReplyWindow = 60 * 60;
     static constexpr int kGroupReplyLimit = 5;
 
     static std::shared_ptr<Bot> create(Options options, Handlers handlers) {
@@ -109,13 +111,27 @@ public:
     }
 
     /// 发送一条消息。body 是官方消息体（content、msg_type、markdown、media、keyboard…）。
-    /// replyTo 指定被动回复的消息 ID；为空时自动选用该会话里仍可回复的最近一条消息，
-    /// 没有时用 5 分钟内的事件 ID，都没有就作为主动消息发送。
+    /// replyTo 指定被动回复的消息 ID；为空时自动选用该会话里仍可回复的最近一条消息（私聊时
+    /// 也可以是对方最近在群里发的消息），没有时用 5 分钟内的事件 ID，都没有就作为主动消息发送。
     void send(const Target& target, json body, const std::string& replyTo, api::Callback cb) {
         if (target.id.empty() || target.scene == Scene::none) { cb(api::result(false, 0, "发送目标无效")); return; }
         if (!body.contains("msg_type")) body["msg_type"] = body.contains("markdown") ? 2 : body.contains("media") ? 7 : 0;
         std::string msgId = replyTo;
-        if (msgId.empty()) msgId = latestReplyable(target);
+        bool viaGroup = false;
+        if (msgId.empty()) msgId = latestReplyable(target, viaGroup);
+        else countReply(msgId);
+        if (viaGroup) {
+            // 用群消息私聊回复要求对方是机器人好友；不是好友会被拒，这时改按主动消息再发一次。
+            auto retry = body;
+            auto self = shared_from_this();
+            body["msg_id"] = msgId;
+            body["msg_seq"] = passive_.nextSeq(msgId);
+            call(drogon::Post, messagesPath(target), body, [self, target, retry, cb = std::move(cb)](json result) mutable {
+                if (result.value("ok", false)) { cb(std::move(result)); return; }
+                self->call(drogon::Post, messagesPath(target), retry, std::move(cb));
+            });
+            return;
+        }
         if (!msgId.empty()) {
             body["msg_id"] = msgId;
             if (target.scene != Scene::channel) body["msg_seq"] = passive_.nextSeq(msgId);
@@ -178,25 +194,52 @@ private:
         return std::to_string(static_cast<int>(target.scene)) + ":" + target.id;
     }
 
-    struct Replyable { std::string messageId; std::time_t at = 0; int used = 0; };
+    struct Replyable { std::string messageId; std::time_t at = 0; bool group = false; };
+    struct Usage { int used = 0; std::time_t at = 0; };
 
     void rememberMessage(const event::MessageEvent& message) {
         if (message.scene != Scene::direct && message.scene != Scene::group) return;
         if (message.id.empty() || message.id == message.eventId) return;
+        const auto now = std::time(nullptr);
+        const Replyable r{message.id, now, message.scene == Scene::group};
         std::lock_guard lock(replyMu_);
-        latest_[conversationKey({message.scene, message.targetId})] = Replyable{message.id, std::time(nullptr), 0};
+        latest_[conversationKey({message.scene, message.targetId})] = r;
+        if (r.group && !message.senderId.empty()) groupSenders_[message.senderId] = r;
+        uses_.try_emplace(message.id, Usage{0, now});
+        if (now - usesSweptAt_ >= 600) {
+            for (auto it = uses_.begin(); it != uses_.end(); ) if (now - it->second.at > kGroupReplyWindow) it = uses_.erase(it); else ++it;
+            for (auto it = groupSenders_.begin(); it != groupSenders_.end(); ) if (now - it->second.at > kGroupReplyWindow) it = groupSenders_.erase(it); else ++it;
+            usesSweptAt_ = now;
+        }
     }
-    std::string latestReplyable(const Target& target) {
-        if (target.scene != Scene::direct && target.scene != Scene::group) return {};
-        const bool direct = target.scene == Scene::direct;
+    void countReply(const std::string& messageId) {
         std::lock_guard lock(replyMu_);
-        auto it = latest_.find(conversationKey(target));
-        if (it == latest_.end()) return {};
-        auto& r = it->second;
-        if (std::time(nullptr) - r.at > (direct ? kDirectReplyWindow : kGroupReplyWindow)
-            || r.used >= (direct ? kDirectReplyLimit : kGroupReplyLimit)) return {};
-        ++r.used;
-        return r.messageId;
+        auto it = uses_.find(messageId);
+        if (it != uses_.end()) ++it->second.used;
+    }
+    /// 选一条还能被动回复的消息并记一次使用；viaGroup 表示私聊时借用了对方的群消息。
+    std::string latestReplyable(const Target& target, bool& viaGroup) {
+        viaGroup = false;
+        if (target.scene != Scene::direct && target.scene != Scene::group) return {};
+        std::lock_guard lock(replyMu_);
+        const auto now = std::time(nullptr);
+        auto usable = [&](const Replyable& r) {
+            const auto window = r.group ? kGroupReplyWindow : kDirectReplyWindow;
+            const auto limit = r.group ? kGroupReplyLimit : kDirectReplyLimit;
+            if (now - r.at > window) return false;
+            auto& u = uses_[r.messageId];
+            if (u.at == 0) u.at = r.at;
+            if (u.used >= limit) return false;
+            ++u.used;
+            return true;
+        };
+        if (auto it = latest_.find(conversationKey(target)); it != latest_.end() && usable(it->second)) return it->second.messageId;
+        if (target.scene == Scene::direct)
+            if (auto it = groupSenders_.find(target.id); it != groupSenders_.end() && usable(it->second)) {
+                viaGroup = true;
+                return it->second.messageId;
+            }
+        return {};
     }
 
     void say(LogLevel level, const std::string& message) const { if (handlers_.log) handlers_.log(level, message); }
@@ -299,6 +342,9 @@ private:
     PassiveReplies passive_;
     EventDeduplicator dedup_;
     std::unordered_map<std::string, Replyable> latest_;
+    std::unordered_map<std::string, Replyable> groupSenders_;   // 用户 OpenID → 他最近的群消息
+    std::unordered_map<std::string, Usage> uses_;               // 消息 ID → 已被动回复次数
+    std::time_t usesSweptAt_ = 0;
 };
 
 }  // namespace catofficial

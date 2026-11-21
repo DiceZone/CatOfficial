@@ -4,7 +4,7 @@
 //
 // 被动回复：回复某条消息时带上它的 msg_id 与逐条递增的 msg_seq；没有消息可回时，
 // 可以用 5 分钟内收到的事件 ID（入群、加好友、开启主动消息、互动按钮等）代替。
-// 去重：Gateway 重连与 Webhook 重投都可能把同一事件送达多次。
+// 去重：WebSocket 重连与 Webhook 重投都可能把同一事件送达多次。
 
 #include <cstddef>
 #include <ctime>
@@ -33,6 +33,12 @@ public:
         auto id = it->second.first;
         events_.erase(it);
         return id;
+    }
+    /// 下一次回复这条消息会用的 msg_seq（不累加）；减 1 即已回复的次数。
+    int peekSeq(const std::string& messageId) {
+        std::lock_guard lock(mu_);
+        auto it = seqs_.find(messageId);
+        return it == seqs_.end() || it->second <= 0 ? 1 : it->second;
     }
     /// 回复同一条消息的下一个 msg_seq，从 1 开始。
     int nextSeq(const std::string& messageId) {
