@@ -1,16 +1,16 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot as BotIcon, ChevronDown, MoreHorizontal, Pencil, Plus, QrCode, RefreshCw, Trash2, Users } from 'lucide-react';
+import { Bot as BotIcon, ChevronDown, MoreHorizontal, Pencil, Plus, QrCode, RefreshCw, Trash2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { toast } from 'sonner';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
-import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { PlatformIcon, PlatformLabel } from '@/components/platform-icon';
 import { PageHeader } from '@/components/page-header';
 import { CardGrid, Choice, EmptyState, Field, StatusDot, Toggle, digits, errorText } from '@/components/form';
 import { api, botLabel, type Bot } from '@/lib/api';
@@ -44,7 +44,7 @@ function BotCard({ bot, onEdit, onDelete, onToggle, onQr }: {
             <div className="relative shrink-0">
               {official && rt?.avatar ? <img src={rt.avatar} alt="" className="h-10 w-10 rounded-full object-cover" />
                 : <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-                    {official ? <BotIcon className="h-5 w-5 text-primary" /> : <Users className="h-5 w-5 text-primary" />}
+                    <PlatformIcon type={official ? 'official' : 'onebot'} className="h-5 w-5" />
                   </div>}
               <span className="absolute -bottom-0.5 -right-0.5"><StatusDot tone={state.tone} /></span>
             </div>
@@ -83,7 +83,7 @@ function BotCard({ bot, onEdit, onDelete, onToggle, onQr }: {
         {state.detail && <p className="break-all rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground">{state.detail}</p>}
 
         <div className="mt-auto flex items-center justify-between gap-3 border-t pt-4">
-          <Badge variant={official ? 'info' : 'neutral'}>{t(official ? 'bots.type_official' : 'bots.type_onebot')}</Badge>
+          <PlatformLabel type={official ? 'official' : 'onebot'} />
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
             {t('common.enabled')}<Switch checked={bot.enabled} onCheckedChange={onToggle} aria-label={t('common.enabled')} />
           </label>
@@ -236,10 +236,10 @@ export function BotsPage() {
       <DropdownMenuTrigger asChild><Button><Plus className="mr-2 h-4 w-4" />{t('bots.add')}<ChevronDown className="ml-2 h-4 w-4" /></Button></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onClick={() => setAdding({ kind: 'official', step: 'qr', draft: { type: 'official', enabled: true, name: '', mode: 'websocket', auto_ack_interactions: true, subscribe_group_member_events: false } })}>
-          <BotIcon className="mr-2 h-4 w-4" />{t('bots.add_official')}
+          <PlatformIcon type="official" className="mr-2" />{t('bots.add_official')}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setAdding({ kind: 'onebot', draft: { type: 'onebot', enabled: true, name: '', connection: 'reverse', host: '127.0.0.1', port: nextPort(), url: 'ws://127.0.0.1:3001', token: '' } })}>
-          <Users className="mr-2 h-4 w-4" />{t('bots.add_onebot')}
+          <PlatformIcon type="onebot" className="mr-2" />{t('bots.add_onebot')}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

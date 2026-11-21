@@ -10,6 +10,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { PageHeader } from '@/components/page-header';
 import { Choice, Field, TagInput, Toggle, digits, errorText } from '@/components/form';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { api, botLabel, type Settings } from '@/lib/api';
 
 const isEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
@@ -36,6 +37,7 @@ export function SettingsPage() {
   const save = async () => {
     setBusy(true);
     try {
+      if (masters.some((m) => m.openid.trim() && !m.bot_id)) { toast.error(t('settings.master_need_bot')); return; }
       const r = await api.saveSettings({ ...s, masters: masters.filter((m) => m.openid.trim()), new_password: newPassword });
       setNewPassword('');
       toast.success(t('common.saved'));
@@ -66,8 +68,10 @@ export function SettingsPage() {
           {masters.map((m, i) => (
             <div key={i} className="grid items-end gap-3 sm:grid-cols-[14rem_1fr_auto]">
               <Field label={t('settings.master_bot')}>
-                <Choice value={m.bot_id || '*'} onChange={(v) => setMasters(masters.map((x, j) => (j === i ? { ...x, bot_id: v === '*' ? '' : v } : x)))}
-                  options={[{ value: '*', label: t('settings.master_all') }, ...officials.map((b) => ({ value: b.id, label: botLabel(b) }))]} />
+                <Select value={m.bot_id || undefined} onValueChange={(v) => setMasters(masters.map((x, j) => (j === i ? { ...x, bot_id: v } : x)))}>
+                  <SelectTrigger aria-invalid={!m.bot_id && !!m.openid}><SelectValue placeholder={t('settings.master_pick_bot')} /></SelectTrigger>
+                  <SelectContent>{officials.map((b) => <SelectItem key={b.id} value={b.id}>{botLabel(b)}</SelectItem>)}</SelectContent>
+                </Select>
               </Field>
               <Field label={t('settings.master_openid')}>
                 <Input className="font-mono" value={m.openid} onChange={(e) => setMasters(masters.map((x, j) => (j === i ? { ...x, openid: e.target.value.trim() } : x)))} />
@@ -76,7 +80,7 @@ export function SettingsPage() {
             </div>
           ))}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-            <Button variant="outline" size="sm" onClick={() => setMasters([...masters, { bot_id: '', openid: '' }])}><Plus className="mr-1 h-4 w-4" />{t('settings.master_add')}</Button>
+            <Button variant="outline" size="sm" disabled={officials.length === 0} onClick={() => setMasters([...masters, { bot_id: officials.length === 1 ? officials[0].id : '', openid: '' }])}><Plus className="mr-1 h-4 w-4" />{t('settings.master_add')}</Button>
             <label className="flex items-center gap-2 text-sm">{t('settings.notify_masters')}<Switch checked={s.notify_masters !== false} onCheckedChange={(v) => set({ notify_masters: v })} /></label>
           </div>
         </CardContent>
@@ -121,9 +125,8 @@ export function SettingsPage() {
               <Input inputMode="numeric" value={s.bind.group_confirm_users ?? 3} onChange={(e) => patch('bind', { group_confirm_users: digits(e.target.value) })} />
             </Field>
           </div>
-          <Toggle label={t('settings.bind_email')} checked={s.bind.email_enabled !== false} onChange={(v) => patch('bind', { email_enabled: v })} />
+          <Toggle label={t('settings.bind_email')} hint={t('settings.bind_email_hint', { command: s.bind.command || '.bind' })} checked={s.bind.email_enabled !== false} onChange={(v) => patch('bind', { email_enabled: v })} />
           <div className="grid gap-5 md:grid-cols-3">
-            <Field label={t('settings.bind_domain')}><Input value={s.bind.email_domain ?? 'qq.com'} onChange={(e) => patch('bind', { email_domain: e.target.value.trim() })} /></Field>
             <Field label={t('settings.bind_ttl')}><Input inputMode="numeric" value={s.bind.code_ttl_minutes ?? 10} onChange={(e) => patch('bind', { code_ttl_minutes: digits(e.target.value) })} /></Field>
           </div>
         </CardContent>
@@ -157,13 +160,31 @@ export function SettingsPage() {
       <Card>
         <CardHeader><CardTitle>{t('settings.other')}</CardTitle></CardHeader>
         <CardContent className="grid gap-5 md:grid-cols-3">
-          <Field label={t('settings.data_dir')}><Input value={s.data_dir ?? 'data'} onChange={(e) => set({ data_dir: e.target.value })} /></Field>
           <Field label={t('settings.log_level')}>
             <Choice value={s.log_level ?? 'info'} onChange={(v) => set({ log_level: v })} options={['debug', 'info', 'warn', 'error'].map((v) => ({ value: v, label: v }))} />
           </Field>
-          <Field label={t('settings.retention')}><Input inputMode="numeric" value={s.message_retention_days ?? 7} onChange={(e) => set({ message_retention_days: digits(e.target.value) })} /></Field>
+          <Field label={t('settings.retention')} hint={t('settings.retention_hint')}><Input inputMode="numeric" value={s.message_retention_days ?? 365} onChange={(e) => set({ message_retention_days: digits(e.target.value) })} /></Field>
+          <Field label={t('settings.image_cache_days')} hint={<ImageCacheUsage />}><Input inputMode="numeric" value={s.image_cache_days ?? 7} onChange={(e) => set({ image_cache_days: digits(e.target.value) })} /></Field>
         </CardContent>
       </Card>
     </>
   );
+}
+
+/// 图片缓存目前的占用，以及清空按钮。
+function ImageCacheUsage() {
+  const { t } = useTranslation();
+  const client = useQueryClient();
+  const usage = useQuery({ queryKey: ['image-cache'], queryFn: api.imageCache });
+  const [busy, setBusy] = React.useState(false);
+  const size = usage.data ? (usage.data.bytes >= 1 << 20 ? `${(usage.data.bytes / (1 << 20)).toFixed(1)} MB` : `${Math.ceil(usage.data.bytes / 1024)} KB`) : '—';
+  return <span className="flex flex-wrap items-center gap-2">
+    {t('settings.image_cache_usage', { files: usage.data?.files ?? 0, size })}
+    <button type="button" disabled={busy || !usage.data?.files} className="text-primary hover:underline disabled:pointer-events-none disabled:opacity-50" onClick={async () => {
+      setBusy(true);
+      try { const r = await api.clearImageCache(); toast.success(t('settings.image_cache_cleared', { n: r.removed })); void client.invalidateQueries({ queryKey: ['image-cache'] }); }
+      catch (e) { toast.error(t('common.failed', { error: errorText(e) })); }
+      finally { setBusy(false); }
+    }}>{t('settings.image_cache_clear')}</button>
+  </span>;
 }

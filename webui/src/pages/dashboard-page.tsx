@@ -1,12 +1,13 @@
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowDownLeft, ArrowUpRight, Bot, Clock, Globe, Plug, Radio, Send, Server, Users } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Clock, Globe, Plug, Radio, Send, Server, Users } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/page-header';
 import { StatusDot } from '@/components/form';
+import { PlatformIcon, PlatformLabel } from '@/components/platform-icon';
+import { ServerInfo } from '@/components/dashboard/server-info';
 import { api, type Status } from '@/lib/api';
 import { currentLocale } from '@/i18n';
 import { formatNumber } from '@/lib/utils';
@@ -71,7 +72,9 @@ export function DashboardPage() {
         <Metric icon={ArrowUpRight} label={t('dashboard.sent')} value={formatNumber(status.sent, locale)} />
         <Metric icon={Clock} label={t('dashboard.uptime')} value={<span className="text-lg">{duration(status.started_at)}</span>} />
       </div>
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid min-w-0 items-stretch gap-6 lg:grid-cols-[minmax(300px,0.85fr)_minmax(0,1.65fr)]">
+        <div className="flex min-h-[22rem] min-w-0 flex-col"><ServerInfo /></div>
+        <div className="min-w-0 space-y-6">
         <Card>
           <CardHeader><CardTitle>{t('dashboard.bots')}</CardTitle></CardHeader>
           <CardContent className="space-y-3">
@@ -85,14 +88,14 @@ export function DashboardPage() {
               <div key={b.id} className="flex items-center gap-3">
                 <div className="relative shrink-0">
                   {b.runtime?.avatar ? <img src={b.runtime.avatar} alt="" className="h-9 w-9 rounded-full" />
-                    : <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">{b.type === 'official' ? <Bot className="h-4 w-4 text-primary" /> : <Users className="h-4 w-4 text-primary" />}</div>}
+                    : <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10"><PlatformIcon type={b.type} /></div>}
                   <span className="absolute -bottom-0.5 -right-0.5"><StatusDot tone={botTone(b)} /></span>
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{b.name || b.runtime?.display_name || b.runtime?.nickname || b.id}</p>
                   <p className="truncate font-mono text-xs text-muted-foreground">{b.runtime?.self_id || '—'}</p>
                 </div>
-                <Badge variant={b.type === 'official' ? 'info' : 'neutral'}>{t(b.type === 'official' ? 'bots.type_official' : 'bots.type_onebot')}</Badge>
+                <PlatformLabel type={b.type} />
               </div>
             ))}
           </CardContent>
@@ -120,6 +123,7 @@ export function DashboardPage() {
             })}
           </CardContent>
         </Card>
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Metric icon={Users} label={t('dashboard.users')} value={formatNumber(status.counts.users, locale)} />

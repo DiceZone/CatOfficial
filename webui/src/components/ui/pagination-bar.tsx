@@ -18,9 +18,11 @@ interface PaginationBarProps {
   /** Fixed two-row layout for narrow split-pane lists. */
   compact?: boolean;
   disabled?: boolean;
+  /** Page-size choices; defaults to the shared list. */
+  sizes?: number[];
 }
 
-export const PaginationBar: React.FC<PaginationBarProps> = ({ total, page, pageSize, onPageChange, onPageSizeChange, label, fixedSize, compact = false, disabled = false }) => {
+export const PaginationBar: React.FC<PaginationBarProps> = ({ total, page, pageSize, onPageChange, onPageSizeChange, label, fixedSize, compact = false, disabled = false, sizes = PAGE_SIZES }) => {
   const { t } = useTranslation();
   const [jump, setJump] = useState('');
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -43,7 +45,7 @@ export const PaginationBar: React.FC<PaginationBarProps> = ({ total, page, pageS
         {!fixedSize && onPageSizeChange && (
           <Select disabled={disabled} value={String(pageSize)} onValueChange={(v) => onPageSizeChange(Number(v))}>
             <SelectTrigger className="h-8 w-20 text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>{PAGE_SIZES.map((s) => <SelectItem key={s} value={String(s)}>{t('pagination.per_page', { n: s })}</SelectItem>)}</SelectContent>
+            <SelectContent>{sizes.map((s) => <SelectItem key={s} value={String(s)}>{t('pagination.per_page', { n: s })}</SelectItem>)}</SelectContent>
           </Select>
         )}
       </div>

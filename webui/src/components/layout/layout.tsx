@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { Activity, Bot, Info, Languages, Link2, LogOut, Menu, MessageSquareText, Moon, PlugZap, RotateCw, ScrollText, SlidersHorizontal, Sun, X } from 'lucide-react';
+import { Activity, Bot, Images, Info, Languages, Link2, LogOut, Menu, MessageSquareReply, MessageSquareText, MessagesSquare, Moon, PlugZap, RotateCw, ScrollText, SlidersHorizontal, Sun, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -17,10 +17,13 @@ interface NavItem { path: string; labelKey: string; icon: Icon; section: Section
 
 const NAV: NavItem[] = [
   { path: '/', labelKey: 'nav.dashboard', icon: Activity, section: 'run' },
+  { path: '/chat', labelKey: 'nav.chat', icon: MessagesSquare, section: 'run' },
   { path: '/messages', labelKey: 'nav.messages', icon: MessageSquareText, section: 'run' },
   { path: '/logs', labelKey: 'nav.logs', icon: ScrollText, section: 'run' },
   { path: '/bots', labelKey: 'nav.bots', icon: Bot, section: 'manage' },
   { path: '/connections', labelKey: 'nav.connections', icon: PlugZap, section: 'manage' },
+  { path: '/replies', labelKey: 'nav.replies', icon: MessageSquareReply, section: 'manage' },
+  { path: '/materials', labelKey: 'nav.materials', icon: Images, section: 'manage' },
   { path: '/bindings', labelKey: 'nav.bindings', icon: Link2, section: 'manage' },
   { path: '/settings', labelKey: 'nav.settings', icon: SlidersHorizontal, section: 'system' },
   { path: '/about', labelKey: 'nav.about', icon: Info, section: 'system' },

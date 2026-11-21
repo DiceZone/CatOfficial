@@ -101,9 +101,51 @@ export interface Bindings {
   required_votes: number;
 }
 
+export interface MessageImage { url: string; src: string }
+export type MessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'markdown'; text: string }
+  | { type: 'image'; url: string; src: string }
+  | { type: 'reply'; id: number };
+
 export interface MessageRow {
-  id: number; time: number; self: boolean; scene: 'private' | 'group';
-  content: string; text: string; images: string[]; peer: number; peer_name: string; sender?: number; sender_name?: string;
+  id: number; time: number; self: boolean; scene: 'private' | 'group' | 'channel'; bot: string; bot_name?: string;
+  content: string; text: string; markdown: string; images: MessageImage[]; parts: MessagePart[];
+  peer: number; peer_openid: string; peer_name: string;
+  sender?: number; sender_openid?: string; sender_name?: string; sender_card?: string; avatar?: string;
+}
+
+export interface MessageQuery {
+  page: number; size: number; order: 'asc' | 'desc'; q?: string; bot?: string; peer?: string; sender?: string;
+  scene?: '' | 'private' | 'group'; from?: number; to?: number;
+}
+
+export interface MessageFilters {
+  bots: { id: string; name: string }[];
+  senders: { openid: string; number: number; name: string }[];
+  conversations: { openid: string; number: number; name: string; scene: 'private' | 'group' }[];
+}
+
+export interface Conversation {
+  peer: string; bot: string; scene: 'private' | 'group'; number: number; name: string; time: number; count: number;
+  avatar?: string; last: MessageRow;
+}
+
+export type MatchType = 'keyword' | 'search' | 'prefix' | 'regex';
+export interface ReplyRule {
+  id: string; name: string; enabled: boolean; builtin: boolean; priority: number;
+  conditions: { type: MatchType; content: string }[]; logic: 'or' | 'and';
+  results: string[]; weights: number[]; format: 'plain' | 'markdown'; scope: 'all' | 'group' | 'private';
+  bots: string[]; prob: number; cooldown_sec: number; pass_through: boolean;
+}
+export interface ReplyVariable { name: string; desc: string }
+
+export interface Material { image_id: string; url: string; file_name?: string; preview_url?: string; created_at?: number; expires_at?: number }
+
+export interface DiskInfo { path: string; mount: string; label: string; fs: string; model: string; total_gb: number; used_gb: number; load: number }
+export interface SystemInfo {
+  os: string; os_id: string; cpu_model: string; cpu_cores: number; cpu_physical: number; cpu_mhz: number; cpu_load: number;
+  mem_total_mb: number; mem_used_mb: number; mem_load: number; mem_speed_mhz: number; proc_mem_mb: number; disks: DiskInfo[];
 }
 
 export interface LogEntry { seq: number; time: number; level: 'debug' | 'info' | 'warn' | 'error'; message: string }
@@ -114,11 +156,11 @@ export interface Settings {
   masters?: { bot_id: string; openid: string }[];
   notify_masters?: boolean;
   smtp_password_set?: boolean;
-  bind: { enabled?: boolean; command?: string; window_seconds?: number; group_confirm_users?: number; email_enabled?: boolean; email_domain?: string; code_ttl_minutes?: number };
+  bind: { enabled?: boolean; command?: string; window_seconds?: number; group_confirm_users?: number; email_enabled?: boolean; code_ttl_minutes?: number };
   webui: { enabled?: boolean; host?: string; port?: number; root?: string };
-  data_dir?: string;
   log_level?: string;
   message_retention_days?: number;
+  image_cache_days?: number;
   new_password?: string;
 }
 
@@ -153,5 +195,40 @@ export const api = {
   bind: (body: { type: string; user_id?: number; group_id?: number; openid?: string; qq: number }) => request<{ ok: boolean }>('POST', 'bindings', body),
   unbind: (type: string, openid: string) => request<{ ok: boolean; number: number }>('DELETE', 'bindings', { type, openid }),
   identities: (q: string) => request<Identity[]>('GET', `identities?q=${encodeURIComponent(q)}`),
-  messages: (page = 1, size = 50) => request<{ total: number; items: MessageRow[] }>('GET', `messages?page=${page}&size=${size}`),
+  messages: (q: MessageQuery) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(q)) if (value !== undefined && value !== '' && value !== 0) params.set(key, String(value));
+    return request<{ total: number; items: MessageRow[] }>('GET', `messages?${params}`);
+  },
+  messageFilters: () => request<MessageFilters>('GET', 'message-filters'),
+  imageCache: () => request<{ files: number; bytes: number; days: number }>('GET', 'image-cache'),
+  clearImageCache: () => request<{ removed: number }>('POST', 'image-cache/clear'),
+
+  conversations: (bot = '') => request<Conversation[]>('GET', `chat/conversations?bot=${encodeURIComponent(bot)}`),
+  chatMessages: (peer: string, opts: { before?: number; after?: number; limit?: number } = {}) =>
+    request<MessageRow[]>('GET', `chat/messages?peer=${encodeURIComponent(peer)}&before=${opts.before ?? 0}&after=${opts.after ?? 0}&limit=${opts.limit ?? 50}`),
+  chatSend: (body: { bot: string; peer: string; scene: string; text?: string; markdown?: string; image?: { name: string; base64: string }; reply_to?: number }) =>
+    request<{ ok: boolean; message_id: number }>('POST', 'chat/send', body),
+
+  replies: () => request<{ rules: ReplyRule[]; variables: ReplyVariable[] }>('GET', 'replies'),
+  saveReply: (rule: Partial<ReplyRule>) => (rule.id ? request<ReplyRule>('PUT', `replies/${rule.id}`, rule) : request<ReplyRule>('POST', 'replies', rule)),
+  deleteReply: (id: string) => request<{ ok: boolean }>('DELETE', `replies/${id}`),
+  resetReply: (id: string) => request<ReplyRule>('POST', `replies/${id}/reset`),
+  testReply: (body: { message?: string; template?: string; bot?: string; scene?: string }) =>
+    request<{ matched?: boolean; rule_id?: string; rule_name?: string; format?: string; text?: string }>('POST', 'replies-test', body),
+
+  materials: (bot: string, cursor = '') =>
+    request<{ images?: Material[]; next_cursor?: string; total?: number }>('GET', `materials?bot=${encodeURIComponent(bot)}&cursor=${encodeURIComponent(cursor)}`),
+  uploadMaterial: (bot: string, fileName: string, base64: string) => request<Material>('POST', 'materials', { bot, file_name: fileName, base64 }),
+  deleteMaterial: (bot: string, id: string) => request<{ ok: boolean }>('DELETE', `materials/${encodeURIComponent(id)}?bot=${encodeURIComponent(bot)}`),
+
+  sysinfo: (since: number) => request<SystemInfo & { history?: { interval: number; window: number; samples: [number, number, number][] } }>('GET', `sysinfo?since=${since}`),
 };
+
+/// 读取文件为 base64（不含 data: 前缀）。
+export const fileToBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(file);
+});
