@@ -54,9 +54,22 @@ catofficial [配置文件]
 
 鉴权用 `Authorization: Bearer <access_token>`，或查询参数 `access_token`。
 
+## 管理面板
+
+默认在 `http://127.0.0.1:6099/` 提供网页管理面板：查看在线状态与各连接方式、修改配置并重启、管理官民绑定、查看收发消息。还没填写 AppID 时程序照常启动，可以直接在面板里填写。
+
+- 首次启动会生成面板密码，显示在控制台并写入配置文件的 `webui.password`；之后可在面板中修改。
+- 面板与 OneBot 使用不同端口。默认只监听本机；改成 `0.0.0.0` 时其他机器也能访问，请使用足够强的密码。
+- 同一 IP 连续输错 5 次密码会被暂停 5 分钟。
+- 前端文件放在程序旁的 `web` 目录（`webui.root` 可改）。从源码构建：`cd webui && npm install && npm run build`，再把 `webui/dist` 复制为 `web`。
+
+```jsonc
+"webui": { "enabled": true, "host": "127.0.0.1", "port": 6099, "password": "", "root": "web" }
+```
+
 ## 号码与官民绑定
 
-官方只提供 OpenID。CatOfficial 给每个 OpenID 分配一个固定号码：群为 `1` 开头、用户为 `2` 开头的 13 位数字，与 Dice!Next 相同。`self_id` 是机器人的真实 QQ 号。
+官方只提供 OpenID。CatOfficial 给每个 OpenID 分配一个固定号码：群为 `1` 开头、用户为 `2` 开头的 13 位数字，与 Dice!Next 相同。号码一经分配就不会再给别人，绑定或解绑后空出来的号码也不会回收。`self_id` 是机器人的真实 QQ 号。
 
 用户或群从普通 QQ 机器人迁移过来时，可以绑定回原来的 QQ 号与群号，应用里按号码存的数据就能接上。两种方式：
 
