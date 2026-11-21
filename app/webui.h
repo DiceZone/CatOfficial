@@ -76,9 +76,12 @@ public:
         app.registerHandler("/", [](const drogon::HttpRequestPtr& req, Callback&& cb) {
             cb(onPanel(req) ? staticFile("index.html") : notFound());
         }, {drogon::Get});
-        app.registerHandler("/assets/{file}", [](const drogon::HttpRequestPtr& req, Callback&& cb, const std::string& file) {
-            cb(onPanel(req) ? staticFile("assets/" + file) : notFound());
-        }, {drogon::Get});
+        for (const char* dir : {"assets", "platform-icons", "os"}) {
+            const std::string prefix = dir;
+            app.registerHandler("/" + prefix + "/{file}", [prefix](const drogon::HttpRequestPtr& req, Callback&& cb, const std::string& file) {
+                cb(onPanel(req) ? staticFile(prefix + "/" + file) : notFound());
+            }, {drogon::Get});
+        }
 
         route("/api/webui/login", drogon::Post, false, [](const drogon::HttpRequestPtr& req, const json& body, Callback&& cb) { login(req, body, std::move(cb)); });
         route("/api/webui/logout", drogon::Post, false, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
@@ -216,6 +219,12 @@ public:
         });
         route("/api/webui/chat/messages", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
             panel::chatMessages(*state().hub, params(req), respond(std::move(cb)));
+        });
+        route("/api/webui/chat/peer", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            panel::chatPeer(*state().hub, params(req), respond(std::move(cb)));
+        });
+        route("/api/webui/chat/manage", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            panel::chatManage(*state().hub, body, respond(std::move(cb)));
         });
         route("/api/webui/chat/send", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
             panel::chatSend(*state().hub, body, respond(std::move(cb)));

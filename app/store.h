@@ -84,6 +84,11 @@ public:
         if (!hasColumn("messages", "ref_idx")) exec("ALTER TABLE messages ADD COLUMN ref_idx TEXT NOT NULL DEFAULT ''");
         exec("CREATE INDEX IF NOT EXISTS messages_ref ON messages(ref_idx)");
         if (!hasColumn("messages", "bot")) exec("ALTER TABLE messages ADD COLUMN bot TEXT NOT NULL DEFAULT ''");
+        // 加 bot 列之前的旧消息：OpenID 只在一个机器人下有效，按同一会话里已知的机器人补上。
+        exec("UPDATE messages SET bot=(SELECT m2.bot FROM messages m2 WHERE m2.peer=messages.peer AND m2.bot<>'' LIMIT 1)"
+             " WHERE bot='' AND EXISTS(SELECT 1 FROM messages m3 WHERE m3.peer=messages.peer AND m3.bot<>'')");
+        exec("CREATE TABLE IF NOT EXISTS group_info(open_id TEXT PRIMARY KEY, member_count INTEGER NOT NULL DEFAULT 0,"
+             " memo TEXT NOT NULL DEFAULT '', bot_role TEXT NOT NULL DEFAULT '', updated INTEGER NOT NULL DEFAULT 0)");
         exec("CREATE INDEX IF NOT EXISTS messages_time ON messages(time)");
         exec("CREATE INDEX IF NOT EXISTS messages_peer ON messages(peer, id)");
         if (!hasColumn("names", "avatar")) exec("ALTER TABLE names ADD COLUMN avatar TEXT NOT NULL DEFAULT ''");
@@ -332,6 +337,28 @@ public:
         while (s.step()) out.push_back(row(s));
         return out;
     }
+    struct GroupInfo { int64_t memberCount = 0; std::string memo, botRole; int64_t updated = 0; };
+    void rememberGroupInfo(const std::string& groupOpenId, const GroupInfo& g) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "INSERT INTO group_info(open_id, member_count, memo, bot_role, updated) VALUES(?,?,?,?,?)"
+                         " ON CONFLICT(open_id) DO UPDATE SET member_count=CASE WHEN excluded.member_count>0 THEN excluded.member_count ELSE group_info.member_count END,"
+                         " memo=excluded.memo, bot_role=CASE WHEN excluded.bot_role='' THEN group_info.bot_role ELSE excluded.bot_role END, updated=excluded.updated");
+        s.bind(1, groupOpenId); s.bind(2, g.memberCount); s.bind(3, g.memo); s.bind(4, g.botRole); s.bind(5, g.updated);
+        s.run();
+    }
+    void rememberBotRole(const std::string& groupOpenId, const std::string& role) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "INSERT INTO group_info(open_id, bot_role) VALUES(?,?) ON CONFLICT(open_id) DO UPDATE SET bot_role=excluded.bot_role");
+        s.bind(1, groupOpenId); s.bind(2, role); s.run();
+    }
+    GroupInfo groupInfo(const std::string& groupOpenId) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "SELECT member_count, memo, bot_role, updated FROM group_info WHERE open_id=?");
+        s.bind(1, groupOpenId);
+        if (!s.step()) return {};
+        return GroupInfo{sqlite3_column_int64(s.raw(), 0), s.text(1), s.text(2), sqlite3_column_int64(s.raw(), 3)};
+    }
+
     /// 消息记录页的筛选条件。时间是 Unix 秒，0 表示不限。
     struct MessageQuery {
         std::string bot, peer, sender, text;

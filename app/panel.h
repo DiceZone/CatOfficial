@@ -27,6 +27,19 @@ using json = nlohmann::json;
 using Respond = std::function<void(int status, json body)>;
 using Params = std::function<std::string(const std::string& name)>;
 
+/// 群头像：官方不提供；做了官民绑定的群用真实群号的 QQ 群头像。
+inline std::string groupAvatar(Store& store, const std::string& groupOpenId) {
+    if (auto n = store.boundNumber(Kind::group, groupOpenId)) return "https://p.qlogo.cn/gh/" + std::to_string(*n) + "/" + std::to_string(*n) + "/100";
+    return {};
+}
+/// 用户头像：平台给过的优先，其次是官方按 AppID + OpenID 的头像地址。
+inline std::string userAvatar(Hub& hub, Store& store, const std::string& botId, const std::string& openId) {
+    auto avatar = store.avatar(openId);
+    if (avatar.empty() && !botId.empty())
+        if (auto relay = hub.relay(botId)) avatar = "https://q.qlogo.cn/qqapp/" + relay->config().appId + "/" + openId + "/100";
+    return avatar;
+}
+
 inline int64_t intParam(const Params& p, const char* name, int64_t fallback) {
     try { const auto v = p(name); return v.empty() ? fallback : std::stoll(v); } catch (...) { return fallback; }
 }
@@ -144,12 +157,8 @@ inline void chatConversations(Hub& hub, const Params& p, const Respond& respond)
         const auto kind = direct ? Kind::user : Kind::group;
         json item{{"peer", c.peer}, {"bot", c.bot}, {"scene", direct ? "private" : "group"}, {"number", store->number(kind, c.peer)},
                   {"name", store->name(kind, c.peer)}, {"time", c.time}, {"count", c.count}, {"last", messageJson(hub, c.last)}};
-        if (direct) item["avatar"] = item["last"].value("self", false) ? std::string() : item["last"].value("avatar", std::string());
-        if (direct && item["avatar"].get<std::string>().empty()) {
-            auto avatar = store->avatar(c.peer);
-            if (avatar.empty()) if (auto relay = hub.relay(c.bot)) avatar = "https://q.qlogo.cn/qqapp/" + relay->config().appId + "/" + c.peer + "/100";
-            item["avatar"] = avatar;
-        }
+        item["avatar"] = direct ? userAvatar(hub, *store, c.bot, c.peer) : groupAvatar(*store, c.peer);
+        if (!direct) item["member_count"] = store->groupInfo(c.peer).memberCount;
         list.push_back(item);
     }
     respond(200, list);
@@ -163,6 +172,178 @@ inline void chatMessages(Hub& hub, const Params& p, const Respond& respond) {
     for (const auto& m : hub.store()->conversationMessages(peer, intParam(p, "before", 0), intParam(p, "after", 0), limit))
         list.push_back(messageJson(hub, m));
     respond(200, list);
+}
+
+inline std::string rfc3339After(int64_t seconds) {
+    const std::time_t at = std::time(nullptr) + seconds;
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &at);
+#else
+    gmtime_r(&at, &tm);
+#endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buf;
+}
+
+inline std::shared_ptr<Relay> onlineRelayFor(Hub& hub, const std::string& id, const Respond& respond) {
+    auto relay = hub.relay(id);
+    if (!relay) { respond(400, json{{"error", "机器人未启用或不存在"}}); return nullptr; }
+    if (!relay->bot()->online()) { respond(409, json{{"error", "机器人不在线"}}); return nullptr; }
+    return relay;
+}
+inline json officialError(const json& r, const std::string& fallback);
+
+/// 一个成员给面板用的形状。
+inline json memberJson(Hub& hub, Store& store, const std::string& botId, const std::string& groupOpenId, const std::string& openId,
+                       std::string role, std::string card, int64_t lastSeen) {
+    if (role.empty() || card.empty())
+        if (auto m = store.member(groupOpenId, openId)) { if (role.empty()) role = m->role; if (card.empty()) card = m->card; if (!lastSeen) lastSeen = m->lastSeen; }
+    return json{{"openid", openId}, {"number", store.number(Kind::user, openId)}, {"name", store.name(Kind::user, openId)},
+                {"card", card}, {"role", role.empty() ? "member" : role}, {"avatar", userAvatar(hub, store, botId, openId)}, {"last_seen", lastSeen}};
+}
+
+/// 列表里出现的人：记下名字与头像，并补上号码与名称，前端直接显示。
+inline void annotatePeople(Hub& hub, Store& store, const std::string& botId, const std::string& groupOpenId, json& value) {
+    if (value.is_array()) { for (auto& item : value) annotatePeople(hub, store, botId, groupOpenId, item); return; }
+    if (!value.is_object()) return;
+    std::string openId;
+    for (const char* key : {"member_openid", "user_openid", "openid"}) if (openId.empty()) openId = protocol::text(value, key);
+    if (!openId.empty()) {
+        store.rememberName(Kind::user, openId, protocol::text(value, "username"));
+        store.rememberAvatar(openId, protocol::text(value, "avatar"));
+        value["_person"] = memberJson(hub, store, botId, groupOpenId, openId, protocol::text(value, "member_role"),
+                                      protocol::text(value, "member_nickname"), 0);
+    }
+    for (auto& [key, child] : value.items()) if (key != "_person" && (child.is_array() || child.is_object())) annotatePeople(hub, store, botId, groupOpenId, child);
+}
+
+/// 会话资料（在线聊天右侧与「…」菜单用）。群：名称、成员数、简介、机器人身份、成员列表。
+inline void chatPeer(Hub& hub, const Params& p, const Respond& respond) {
+    const auto botId = p("bot"), peer = p("peer");
+    const bool group = p("scene") != "private";
+    auto store = hub.store();
+    auto relay = hub.relay(botId);
+    if (peer.empty()) { respond(400, json{{"error", "缺少会话"}}); return; }
+    const auto kind = group ? Kind::group : Kind::user;
+    auto base = [store, peer, kind, group, botId, &hub]() {
+        json out{{"scene", group ? "group" : "private"}, {"openid", peer}, {"number", store->number(kind, peer)}, {"name", store->name(kind, peer)}};
+        if (auto bound = store->boundNumber(kind, peer)) out["bound_number"] = *bound;
+        if (group) {
+            const auto info = store->groupInfo(peer);
+            out["avatar"] = groupAvatar(*store, peer);
+            out["member_count"] = info.memberCount;
+            out["memo"] = info.memo;
+            out["bot_role"] = info.botRole;
+        } else {
+            out["avatar"] = userAvatar(hub, *store, botId, peer);
+        }
+        return out;
+    };
+    if (!group || !relay || !relay->bot()->online() || peer.rfind("channel:", 0) == 0) {
+        json out = base();
+        if (group) {
+            json members = json::array();
+            for (const auto& m : store->members(peer)) members.push_back(memberJson(hub, *store, botId, peer, m.userOpenId, m.role, m.card, m.lastSeen));
+            out["members"] = members;
+            out["members_source"] = "seen";
+        }
+        respond(200, out);
+        return;
+    }
+    // 群：刷新群资料 → 机器人在群里的身份 → 尝试官方成员列表（没有权限时用见过的成员）。
+    Hub* hubPtr = &hub;
+    relay->refreshGroupInfo(peer, true, [hubPtr, relay, store, peer, botId, base, respond](json) {
+        relay->bot()->call(drogon::Get, "/v2/groups/" + peer + "/bot_state", json::object(), [hubPtr, relay, store, peer, botId, base, respond](json state) {
+            if (state.value("ok", false)) store->rememberBotRole(peer, protocol::text(state.value("data", json::object()), "member_role"));
+            relay->bot()->call(drogon::Get, "/v2/groups/" + peer + "/members", json::object(), [hubPtr, store, peer, botId, base, respond](json r) {
+                json out = base();
+                json members = json::array();
+                if (r.value("ok", false)) {
+                    auto data = r.value("data", json::object());
+                    for (const auto& m : data.value("members", json::array())) {
+                        if (!m.is_object()) continue;
+                        const auto openId = protocol::text(m, "member_openid");
+                        if (openId.empty()) continue;
+                        store->rememberName(Kind::user, openId, protocol::text(m, "username"));
+                        store->rememberAvatar(openId, protocol::text(m, "avatar"));
+                        store->rememberMember(peer, openId, protocol::text(m, "member_role"), protocol::text(m, "member_nickname"));
+                        members.push_back(memberJson(*hubPtr, *store, botId, peer, openId, protocol::text(m, "member_role"), protocol::text(m, "member_nickname"), 0));
+                    }
+                    out["members_source"] = "official";
+                    out["members_next"] = protocol::text(data, "next_cursor");
+                } else {
+                    for (const auto& m : store->members(peer)) members.push_back(memberJson(*hubPtr, *store, botId, peer, m.userOpenId, m.role, m.card, m.lastSeen));
+                    out["members_source"] = "seen";
+                    out["members_error"] = r.value("message", std::string());
+                }
+                out["members"] = members;
+                respond(200, out);
+            });
+        });
+    });
+}
+
+/// 群管理（官方接口；大多要求机器人是群管理员）。
+/// body：{bot, peer, action, member?, seconds?, blacklist?, request_id?, reason?, cursor?}
+inline void chatManage(Hub& hub, const json& body, const Respond& respond) {
+    auto relay = onlineRelayFor(hub, body.value("bot", std::string()), respond);
+    if (!relay) return;
+    const auto peer = body.value("peer", std::string());
+    const auto action = body.value("action", std::string());
+    const auto member = body.value("member", std::string());
+    if (peer.empty() || peer.find_first_of("/?#") != std::string::npos || member.find_first_of("/?#") != std::string::npos) { respond(400, json{{"error", "参数无效"}}); return; }
+    const std::string base = "/v2/groups/" + peer;
+    auto store = hub.store();
+    Hub* hubPtr = &hub;
+    const auto botId = relay->id();
+    auto reply = [hubPtr, store, botId, peer, respond](const std::string& fallback) {
+        return [hubPtr, store, botId, peer, respond, fallback](json r) {
+            if (!r.value("ok", false)) { respond(502, officialError(r, fallback)); return; }
+            auto data = r.value("data", json::object());
+            annotatePeople(*hubPtr, *store, botId, peer, data);
+            respond(200, json{{"ok", true}, {"data", data}});
+        };
+    };
+    auto call = [&](drogon::HttpMethod method, const std::string& path, const json& payload, const std::string& fallback) {
+        relay->bot()->call(method, path, payload, reply(fallback));
+    };
+    auto needMember = [&] { if (member.empty()) { respond(400, json{{"error", "缺少成员"}}); return false; } return true; };
+    if (action == "mute") {
+        if (!needMember()) return;
+        const auto seconds = body.value("seconds", int64_t(600));
+        const bool remove = seconds <= 0;
+        call(drogon::Post, base + "/restrict_chat_setting",
+             json{{"members", json::array({json{{"op", remove ? "del" : "add"}, {"member_openid", member}, {"mute_expire_at", remove ? std::string() : rfc3339After(seconds)}}})}},
+             remove ? "解除禁言失败" : "禁言失败");
+    } else if (action == "mute_list") {
+        call(drogon::Get, base + "/restrict_chat_setting", json::object(), "读取禁言列表失败");
+    } else if (action == "kick") {
+        if (!needMember()) return;
+        call(drogon::Post, base + "/batch_remove_members",
+             json{{"member_openids", json::array({member})}, {"add_to_member_blacklist", body.value("blacklist", false)}}, "移出成员失败");
+    } else if (action == "blacklist") {
+        json q = json::object();
+        if (const auto c = body.value("cursor", std::string()); !c.empty()) q["cursor"] = c;
+        call(drogon::Get, base + "/member_blacklist", q, "读取黑名单失败");
+    } else if (action == "blacklist_add" || action == "blacklist_del") {
+        if (!needMember()) return;
+        call(drogon::Post, base + "/member_blacklist",
+             json{{"op", action == "blacklist_add" ? "add" : "del"}, {"member_openids", json::array({member})}}, "修改黑名单失败");
+    } else if (action == "join_requests") {
+        json q{{"limit", 50}};
+        if (const auto c = body.value("cursor", std::string()); !c.empty()) q["cursor"] = c;
+        call(drogon::Get, base + "/join_request_list", q, "读取入群申请失败");
+    } else if (action == "join_approve" || action == "join_decline") {
+        if (!needMember()) return;
+        json payload{{"op", action == "join_approve" ? "approve" : "decline"}};
+        if (const auto id = body.value("request_id", std::string()); !id.empty()) payload["join_request_id"] = id;
+        if (const auto reason = body.value("reason", std::string()); !reason.empty() && action == "join_decline") payload["reject_reason"] = reason;
+        call(drogon::Post, base + "/approval_join_request/" + member, payload, "审批失败");
+    } else {
+        respond(400, json{{"error", "未知的操作"}});
+    }
 }
 
 /// body：{bot, peer, scene: private|group, text?, markdown?, image: {name, base64}?, reply_to?}

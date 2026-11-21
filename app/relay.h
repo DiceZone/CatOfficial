@@ -132,6 +132,32 @@ public:
         deliver(p, segments, e.id == e.eventId ? std::string() : e.id, std::move(done), e.scene == Scene::direct ? "私聊 " + nickname(e.senderId) : "群 " + e.targetId);
     }
 
+    /// 取群资料（官方「获取群信息」：group_name、group_member_num、group_finger_memo），记进库里。
+    /// force 为 false 时每个群 6 小时最多一次。done 可为空。
+    void refreshGroupInfo(const std::string& groupOpenId, bool force = false, std::function<void(json)> done = {}) {
+        if (groupOpenId.empty() || groupOpenId.rfind("channel:", 0) == 0) { if (done) done(json()); return; }
+        {
+            std::lock_guard lock(infoMu_);
+            auto& at = infoFetched_[groupOpenId];
+            const auto now = std::time(nullptr);
+            if (!force && now - at < 6 * 3600) { if (done) done(json()); return; }
+            at = now;
+        }
+        auto store = store_;
+        bot_->call(drogon::Get, "/v2/groups/" + groupOpenId + "/info", json::object(), [store, groupOpenId, done](json r) {
+            if (r.value("ok", false)) {
+                const auto data = r.value("data", json::object());
+                store->rememberName(Kind::group, groupOpenId, protocol::text(data, "group_name"));
+                Store::GroupInfo g;
+                g.memberCount = data.contains("group_member_num") && data["group_member_num"].is_number_integer() ? data["group_member_num"].get<int64_t>() : 0;
+                g.memo = protocol::text(data, "group_finger_memo");
+                g.updated = std::time(nullptr);
+                store->rememberGroupInfo(groupOpenId, g);
+            }
+            if (done) done(r);
+        });
+    }
+
     /// 被动回复一条收到的消息（.bind 等内部指令用）。
     void replyText(const event::MessageEvent& e, const std::string& text) {
         const auto scene = e.scene;
@@ -295,6 +321,7 @@ private:
         if (group) {
             store_->rememberMember(peerOpenId, e.senderId, e.role, e.memberNickname);
             if (!e.groupName.empty()) store_->rememberName(Kind::group, peerOpenId, e.groupName);
+            if (!channel) refreshGroupInfo(peerOpenId);
         } else {
             store_->markDirect(e.senderId);
         }
@@ -741,6 +768,8 @@ private:
     std::shared_ptr<Bot> bot_;
     std::mutex errorMu_;
     std::string lastError_;
+    std::mutex infoMu_;
+    std::map<std::string, std::time_t> infoFetched_;
     std::atomic<uint64_t> received_{0}, sent_{0};
 
 };
