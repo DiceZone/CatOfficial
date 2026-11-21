@@ -50,6 +50,13 @@ struct Config {
     std::vector<Listener> listeners;
     std::vector<HttpPost> httpPost;
     std::vector<ReverseWs> wsReverse;
+
+    // 管理面板
+    bool webuiEnabled = true;
+    std::string webuiHost = "127.0.0.1";
+    uint16_t webuiPort = 6099;
+    std::string webuiPassword;          // 为空时首次启动自动生成并写回配置文件
+    std::string webuiRoot = "web";      // 前端文件目录，相对配置文件所在目录
 };
 
 inline const char* kConfigTemplate = R"({
@@ -76,6 +83,13 @@ inline const char* kConfigTemplate = R"({
     "http_post": [],
     "ws_reverse": []
   },
+  "webui": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 6099,
+    "password": "",
+    "root": "web"
+  },
   "data_dir": "data",
   "log_level": "info",
   "message_retention_days": 7
@@ -92,7 +106,6 @@ inline Config parseConfig(const nlohmann::json& j) {
     c.webhook = bot.value("mode", std::string("gateway")) == "webhook";
     c.subscribeGroupMemberEvents = bot.value("subscribe_group_member_events", false);
     c.autoAckInteractions = bot.value("auto_ack_interactions", true);
-    if (c.appId.empty() || c.appSecret.empty()) throw std::runtime_error("bot.app_id 与 bot.app_secret 不能为空");
 
     const auto webhook = j.value("webhook", json::object());
     c.webhookHost = webhook.value("host", c.webhookHost);
@@ -133,6 +146,15 @@ inline Config parseConfig(const nlohmann::json& j) {
     c.dataDir = j.value("data_dir", c.dataDir);
     c.logLevel = j.value("log_level", c.logLevel);
     c.messageRetentionDays = j.value("message_retention_days", c.messageRetentionDays);
+    const auto webui = j.value("webui", json::object());
+    c.webuiEnabled = webui.value("enabled", c.webuiEnabled);
+    c.webuiHost = webui.value("host", c.webuiHost);
+    c.webuiPort = webui.value("port", c.webuiPort);
+    c.webuiPassword = webui.value("password", std::string());
+    c.webuiRoot = webui.value("root", c.webuiRoot);
+    if (c.webuiEnabled && c.webuiPort == 0) throw std::runtime_error("webui.port 不能为 0");
+    for (const auto& l : c.listeners)
+        if (c.webuiEnabled && l.port == c.webuiPort) throw std::runtime_error("webui.port 不能与 OneBot 服务端口相同");
     return c;
 }
 

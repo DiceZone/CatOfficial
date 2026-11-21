@@ -62,10 +62,23 @@ public:
         bot_ = Bot::create(std::move(options), std::move(handlers));
     }
 
-    void start() { bot_->start(); }
+    bool configured() const { return !config_.appId.empty() && !config_.appSecret.empty(); }
+    void start() {
+        if (!configured()) { say(LogLevel::warn, "尚未填写 AppID 与 AppSecret，请在管理面板或配置文件中填写后重启"); return; }
+        bot_->start();
+    }
     void stop() { bot_->stop(); }
     std::shared_ptr<Bot> bot() const { return bot_; }
+    std::shared_ptr<Store> store() const { return store_; }
     const Config& config() const { return config_; }
+
+    /// 管理面板用的运行状态。
+    json overview() {
+        return json{{"configured", configured()}, {"online", bot_->online()}, {"self_id", selfId()}, {"nickname", bot_->username()},
+                    {"avatar", bot_->avatar()}, {"app_id", config_.appId}, {"mode", config_.webhook ? "webhook" : "gateway"},
+                    {"version", kVersion}, {"started_at", startedAt_}, {"received", received_.load()}, {"sent", sent_.load()}};
+    }
+    std::string displayName(Kind kind, const std::string& openId) { return store_->name(kind, openId); }
 
     /// OneBot self_id：机器人的真实 QQ 号；平台没给时分配一个固定号码。
     int64_t selfId() {
@@ -245,6 +258,7 @@ private:
     }
 
     void onMessage(const event::MessageEvent& e) {
+        ++received_;
         say(LogLevel::debug, "官方原始消息 " + e.type + "：" + e.data.dump());
         const bool channel = e.scene == Scene::channel;
         const bool group = e.scene == Scene::group || channel;
@@ -439,6 +453,7 @@ private:
     }
 
     void recordSent(SendJob& job, const json& result) {
+        ++sent_;
         say(LogLevel::debug, "官方发送响应：" + result.value("data", json::object()).dump());
         Store::Message m;
         const auto data = protocol::object(result, "data");
@@ -671,6 +686,8 @@ private:
     std::shared_ptr<Store> store_;
     Logger log_;
     std::shared_ptr<Bot> bot_;
+    std::atomic<uint64_t> received_{0}, sent_{0};
+    std::time_t startedAt_ = std::time(nullptr);
     std::mutex sinkMu_;
     std::map<int, Sink> sinks_;
     int nextSink_ = 0;

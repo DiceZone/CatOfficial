@@ -13,7 +13,10 @@
 #include <openssl/hmac.h>
 
 #include <algorithm>
+#include <atomic>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -39,11 +42,27 @@ inline std::string hmacSha1Hex(const std::string& key, const std::string& data) 
     return hex;
 }
 
+/// 各连接方式的当前状态，供管理面板显示。
+struct ConnectionStats {
+    std::atomic<int> wsClients{0};
+    std::mutex mu;
+    std::map<std::string, nlohmann::json> reverse;   // url → {connected, since, error}
+    std::map<std::string, nlohmann::json> posts;     // url → {ok, status, at}
+    static ConnectionStats& get() { static ConnectionStats s; return s; }
+    void setReverse(const std::string& url, nlohmann::json state) { std::lock_guard lock(mu); reverse[url] = std::move(state); }
+    void setPost(const std::string& url, nlohmann::json state) { std::lock_guard lock(mu); posts[url] = std::move(state); }
+};
+
 class Server {
 public:
     static std::shared_ptr<Relay>& relay() { static std::shared_ptr<Relay> r; return r; }
     static std::set<uint16_t>& httpPorts() { static std::set<uint16_t> p; return p; }
     static std::set<uint16_t>& wsPorts() { static std::set<uint16_t> p; return p; }
+    /// 管理面板的端口与单层路径的静态文件（如 /favicon.svg），由 WebUi 设置。
+    static uint16_t& panelPort() { static uint16_t p = 0; return p; }
+    static std::function<drogon::HttpResponsePtr(const std::string&)>& panelFile() {
+        static std::function<drogon::HttpResponsePtr(const std::string&)> f; return f;
+    }
 
     /// 校验 access_token：Authorization: Bearer xxx 或查询参数 access_token。0 通过，401 缺失，403 不符。
     static int authorize(const drogon::HttpRequestPtr& req) {
@@ -130,6 +149,7 @@ private:
             resp->setBody(body.dump());
             callback(resp);
         };
+        if (panelFile() && panelPort() && req->getLocalAddr().toPort() == panelPort()) { callback(panelFile()(action)); return; }
         if (!httpPorts().count(req->getLocalAddr().toPort())) { respond(404, Relay::failed(1404, "此端口未开启 HTTP API")); return; }
         if (const int code = authorize(req)) { respond(code, Relay::failed(code, code == 401 ? "缺少 access_token" : "access_token 不正确")); return; }
         const auto params = requestParams(req);
@@ -150,7 +170,7 @@ public:
     WS_PATH_ADD("/event");
     WS_PATH_LIST_END
 
-    struct Context { bool api = false; bool events = false; int sink = 0; };
+    struct Context { bool api = false; bool events = false; int sink = 0; bool counted = false; };
 
     void handleNewConnection(const drogon::HttpRequestPtr& req, const drogon::WebSocketConnectionPtr& conn) override {
         auto relay = Server::relay();
@@ -159,6 +179,8 @@ public:
             return;
         }
         auto ctx = std::make_shared<Context>();
+        ctx->counted = true;
+        ++ConnectionStats::get().wsClients;
         const auto path = req->path();
         ctx->api = path != "/event";
         ctx->events = path != "/api";
@@ -178,7 +200,10 @@ public:
     }
 
     void handleConnectionClosed(const drogon::WebSocketConnectionPtr& conn) override {
-        if (auto ctx = conn->getContext<Context>(); ctx && ctx->sink) Server::relay()->removeSink(ctx->sink);
+        auto ctx = conn->getContext<Context>();
+        if (!ctx) return;
+        if (ctx->sink) Server::relay()->removeSink(ctx->sink);
+        if (ctx->counted) { ctx->counted = false; --ConnectionStats::get().wsClients; }
     }
 
     /// 解析 {action, params, echo} 并执行，响应原样带回 echo。
@@ -203,7 +228,11 @@ public:
         auto relay = Server::relay();
         auto self = shared_from_this();
         // 还不知道 self_id（机器人尚未上线）时稍后再连，应用端靠 X-Self-ID 区分账号。
-        if (relay->selfId() == 0) { retry(); return; }
+        if (relay->selfId() == 0) {
+            ConnectionStats::get().setReverse(config_.url, json{{"connected", false}, {"error", "等待机器人上线"}, {"since", std::time(nullptr)}});
+            retry();
+            return;
+        }
         const auto endpoint = splitUrl(config_.url);
         client_ = drogon::WebSocketClient::newWebSocketClient(endpoint.origin);
         auto req = drogon::HttpRequest::newHttpRequest();
@@ -220,10 +249,16 @@ public:
             });
         });
         client_->setConnectionClosedHandler([self](const drogon::WebSocketClientPtr&) {
+            ConnectionStats::get().setReverse(self->config_.url, json{{"connected", false}, {"error", "连接已断开"}, {"since", std::time(nullptr)}});
             self->retry();
         });
         client_->connectToServer(req, [self](drogon::ReqResult result, const drogon::HttpResponsePtr&, const drogon::WebSocketClientPtr& client) {
-            if (result != drogon::ReqResult::Ok) { self->retry(); return; }
+            if (result != drogon::ReqResult::Ok) {
+                ConnectionStats::get().setReverse(self->config_.url, json{{"connected", false}, {"error", drogon::to_string(result)}, {"since", std::time(nullptr)}});
+                self->retry();
+                return;
+            }
+            ConnectionStats::get().setReverse(self->config_.url, json{{"connected", true}, {"since", std::time(nullptr)}});
             auto relay = Server::relay();
             std::weak_ptr<drogon::WebSocketClient> weak = client;
             self->sink_ = relay->addSink([weak](const json& event) {
@@ -265,7 +300,12 @@ inline void Server::startClients() {
             req->addHeader("X-Self-ID", std::to_string(event.value("self_id", int64_t(0))));
             req->addHeader("User-Agent", std::string("CatOfficial/") + kVersion);
             if (!post.secret.empty()) req->addHeader("X-Signature", "sha1=" + hmacSha1Hex(post.secret, body));
-            client->sendRequest(req, [weak, event](drogon::ReqResult result, const drogon::HttpResponsePtr& resp) {
+            const auto url = post.url;
+            client->sendRequest(req, [weak, event, url](drogon::ReqResult result, const drogon::HttpResponsePtr& resp) {
+                const bool ok = result == drogon::ReqResult::Ok && resp && resp->statusCode() >= 200 && resp->statusCode() < 300;
+                ConnectionStats::get().setPost(url, json{{"ok", ok}, {"at", std::time(nullptr)},
+                    {"status", resp ? static_cast<int>(resp->statusCode()) : 0},
+                    {"error", result == drogon::ReqResult::Ok ? std::string() : drogon::to_string(result)}});
                 auto relay = weak.lock();
                 if (!relay || result != drogon::ReqResult::Ok || !resp || resp->statusCode() != drogon::k200OK) return;
                 const auto op = json::parse(resp->body(), nullptr, false);

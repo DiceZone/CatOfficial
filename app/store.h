@@ -11,6 +11,7 @@
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <ctime>
 #include <mutex>
@@ -43,6 +44,14 @@ public:
 
     struct Member { std::string groupOpenId, userOpenId, role, card; int64_t lastSeen = 0; };
 
+    struct Identity {
+        Kind kind = Kind::user;
+        std::string openId, name;
+        int64_t number = 0;
+        bool bound = false;
+        bool direct = false;
+    };
+
     explicit Store(const std::string& path) {
         if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK) {
             const std::string error = db_ ? sqlite3_errmsg(db_) : "无法打开数据库";
@@ -54,6 +63,8 @@ public:
         exec("CREATE TABLE IF NOT EXISTS identities(kind TEXT NOT NULL, open_id TEXT NOT NULL, number INTEGER NOT NULL,"
              " bound INTEGER NOT NULL DEFAULT 0, direct INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(kind, open_id))");
         exec("CREATE UNIQUE INDEX IF NOT EXISTS identities_number ON identities(kind, number)");
+        // 已分配过的最大号码。号码一旦发出就不再回收，绑定或解绑后空出的号码也不会给别人。
+        exec("CREATE TABLE IF NOT EXISTS counters(kind TEXT PRIMARY KEY, last INTEGER NOT NULL)");
         exec("CREATE TABLE IF NOT EXISTS names(kind TEXT NOT NULL, open_id TEXT NOT NULL, name TEXT NOT NULL,"
              " updated INTEGER NOT NULL, PRIMARY KEY(kind, open_id))");
         exec("CREATE TABLE IF NOT EXISTS members(group_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member',"
@@ -75,11 +86,21 @@ public:
         std::lock_guard lock(mu_);
         if (auto existing = numberLocked(kind, openId)) return *existing;
         const int64_t base = kind == Kind::group ? kGroupBase : kUserBase;
-        int64_t next = base + 1;
+        int64_t last = base;
         {
-            Statement s(db_, "SELECT MAX(number) FROM identities WHERE kind=? AND bound=0 AND number>? AND number<?");
+            Statement s(db_, "SELECT last FROM counters WHERE kind=?");
+            s.bind(1, kindName(kind));
+            if (s.step()) last = sqlite3_column_int64(s.raw(), 0);
+        }
+        {
+            Statement s(db_, "SELECT MAX(number) FROM identities WHERE kind=? AND number>? AND number<?");
             s.bind(1, kindName(kind)); s.bind(2, base); s.bind(3, base + kGroupBase);
-            if (s.step() && sqlite3_column_type(s.raw(), 0) != SQLITE_NULL) next = sqlite3_column_int64(s.raw(), 0) + 1;
+            if (s.step() && sqlite3_column_type(s.raw(), 0) != SQLITE_NULL) last = (std::max)(last, sqlite3_column_int64(s.raw(), 0));
+        }
+        const int64_t next = last + 1;
+        {
+            Statement s(db_, "INSERT INTO counters(kind, last) VALUES(?,?) ON CONFLICT(kind) DO UPDATE SET last=excluded.last");
+            s.bind(1, kindName(kind)); s.bind(2, next); s.run();
         }
         Statement insert(db_, "INSERT INTO identities(kind, open_id, number, bound) VALUES(?,?,?,0)");
         insert.bind(1, kindName(kind)); insert.bind(2, openId); insert.bind(3, next);
@@ -237,6 +258,56 @@ public:
         s.bind(1, refIdx); s.bind(2, id); s.run();
     }
 
+    /// 已做官民绑定的身份。
+    std::vector<Identity> boundIdentities() {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "SELECT i.kind, i.open_id, i.number, i.bound, i.direct, COALESCE(n.name, '') FROM identities i"
+                         " LEFT JOIN names n ON n.kind=i.kind AND n.open_id=i.open_id WHERE i.bound=1 ORDER BY i.kind, i.number");
+        std::vector<Identity> out;
+        while (s.step()) out.push_back(identityRow(s));
+        return out;
+    }
+    /// 按号码、OpenID 或名称查身份。
+    std::vector<Identity> searchIdentities(const std::string& query, int limit) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "SELECT i.kind, i.open_id, i.number, i.bound, i.direct, COALESCE(n.name, '') FROM identities i"
+                         " LEFT JOIN names n ON n.kind=i.kind AND n.open_id=i.open_id"
+                         " WHERE i.open_id NOT LIKE 'bot:%' AND (?='' OR CAST(i.number AS TEXT) LIKE ? OR i.open_id LIKE ? OR n.name LIKE ?)"
+                         " ORDER BY i.kind, i.number LIMIT ?");
+        const auto like = "%" + query + "%";
+        s.bind(1, query); s.bind(2, like); s.bind(3, like); s.bind(4, like); s.bind(5, static_cast<int64_t>(limit));
+        std::vector<Identity> out;
+        while (s.step()) out.push_back(identityRow(s));
+        return out;
+    }
+    /// 解除官民绑定：改回分配的号码。返回新号码，未绑定时返回 0。
+    int64_t unbind(Kind kind, const std::string& openId) {
+        {
+            std::lock_guard lock(mu_);
+            Statement check(db_, "SELECT bound FROM identities WHERE kind=? AND open_id=?");
+            check.bind(1, kindName(kind)); check.bind(2, openId);
+            if (!check.step() || sqlite3_column_int(check.raw(), 0) == 0) return 0;
+            Statement s(db_, "DELETE FROM identities WHERE kind=? AND open_id=?");
+            s.bind(1, kindName(kind)); s.bind(2, openId); s.run();
+        }
+        return number(kind, openId);
+    }
+    /// 全部会话最近的消息，新的在前；beforeId 大于 0 时只取更早的。
+    std::vector<Message> recentAll(int limit, int64_t beforeId) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "SELECT id, official_id, scene, peer, sender, time, self, message, ref_idx FROM messages"
+                         " WHERE (?<=0 OR id<?) ORDER BY id DESC LIMIT ?");
+        s.bind(1, beforeId); s.bind(2, beforeId); s.bind(3, static_cast<int64_t>(limit));
+        std::vector<Message> out;
+        while (s.step()) out.push_back(row(s));
+        return out;
+    }
+    int64_t count(const char* table) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, (std::string("SELECT COUNT(*) FROM ") + table).c_str());
+        return s.step() ? sqlite3_column_int64(s.raw(), 0) : 0;
+    }
+
     /// 删除早于 cutoff 的消息索引。
     void pruneMessages(int64_t cutoff) {
         std::lock_guard lock(mu_);
@@ -271,6 +342,17 @@ private:
         sqlite3* db_;
         sqlite3_stmt* stmt_ = nullptr;
     };
+
+    static Identity identityRow(Statement& s) {
+        Identity i;
+        i.kind = s.text(0) == "group" ? Kind::group : Kind::user;
+        i.openId = s.text(1);
+        i.number = sqlite3_column_int64(s.raw(), 2);
+        i.bound = sqlite3_column_int(s.raw(), 3) != 0;
+        i.direct = sqlite3_column_int(s.raw(), 4) != 0;
+        i.name = s.text(5);
+        return i;
+    }
 
     static Message row(Statement& s) {
         Message m;

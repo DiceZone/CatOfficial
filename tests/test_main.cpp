@@ -123,6 +123,10 @@ TEST(StoreAllocatesStableNumbersAndHonoursBindings) {
         CHECK(s.bound(Kind::user, "OPENA"));
         // 绑定不影响后续分配。
         CHECK_EQ(s.number(Kind::user, "OPENC"), Store::kUserBase + 3);
+        // 号码最大的用户绑定后，空出的号码也不会发给新用户；解绑的人拿新号码。
+        CHECK(s.bind(Kind::user, "OPENC", 222333));
+        CHECK_EQ(s.number(Kind::user, "OPEND"), Store::kUserBase + 4);
+        CHECK_EQ(s.unbind(Kind::user, "OPENC"), Store::kUserBase + 5);
 
         Store::Message m;
         m.officialId = "OFF1"; m.scene = 2; m.peer = "GROUP"; m.sender = "OPENA"; m.time = 100;
