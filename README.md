@@ -5,7 +5,7 @@ CatOfficial 把 QQ 官方机器人转接为标准 OneBot V11，让原本面向 O
 官方机器人已开放的能力会原样中继；官方后续开放新能力，CatOfficial 随之跟进。转接时处理好 OneBot 开发者关心的细节：
 
 - 数字形式的 `user_id` / `group_id`，已做官民绑定的用户与群沿用原 QQ 号与群号
-- 历史消息索引：引用回复、`get_msg`、撤回都能用；被动回复所需的 `msg_id` 自动补全
+- 历史消息索引：引用回复、`get_msg`、撤回都能用；被动回复所需的 `msg_id` 自动补全（60 分钟内的消息；私聊某人时，没有私聊消息可回也会借用他在群里发的消息，按官方规则须是机器人好友）
 - 头像地址、昵称与群身份
 
 ## 快速开始
@@ -20,14 +20,17 @@ catofficial [配置文件]
 
 | 页面 | 内容 |
 |---|---|
-| 概览 | 各机器人是否在线、各连接的状态、收发数量 |
+| 概览 | 各机器人是否在线、各连接的状态、收发数量，以及服务器的 CPU、内存与磁盘占用 |
+| 在线聊天 | 按会话查看消息，以机器人的身份回复文字、图片或 Markdown（Markdown 在弹窗里编辑，右侧实时预览） |
 | 登录管理 | 添加多个官方机器人（默认扫码登录，也可手动输入密钥）；接入 OneBot 机器人（如 NapCat，反向或正向 WebSocket），供官民绑定使用 |
 | 连接管理 | 添加 OneBot 连接，每个连接单独设置令牌、消息格式、是否上报自身消息、服务哪些官方机器人 |
-| 消息记录 / 运行日志 | 收发的消息；程序最近 3000 条日志 |
+| 消息记录 / 运行日志 | 收发的消息，可搜索、按时间范围、类型、会话或发送者筛选，可调每页条数与排序；程序最近 3000 条日志 |
+| 自定义回复 | 关键词触发的自动回复，见下文 |
+| 官方图床 | 官方素材接口里的图片：上传、替换、删除，复制可写进 Markdown 的引用 |
 | 官民绑定 | 已绑定的用户与群、等待确认的群、手动绑定与解绑 |
-| 设置 | 主人、邮件（SMTP）与运行异常通知、绑定指令、Webhook 入口、面板端口与密码 |
+| 设置 | 主人、邮件（SMTP）与运行异常通知、绑定指令、Webhook 入口、面板端口与密码、聊天记录与图片缓存的保留天数 |
 
-- 机器人、连接与设置的修改写入配置文件并立即生效，不用重启。只有面板自身的地址、官方 Webhook 入口与数据目录改了要重启，面板顶部会提示，点一下即可；重启后登录状态保留。
+- 机器人、连接与设置的修改写入配置文件并立即生效，不用重启。只有面板自身的地址与官方 Webhook 入口改了要重启，面板顶部会提示，点一下即可；重启后登录状态保留。
 - 面板与 OneBot 使用不同端口。默认只监听本机；改成 `0.0.0.0` 时其他机器也能访问，请使用足够强的密码。同一 IP 连续输错 5 次密码会被暂停 5 分钟。
 - 前端文件放在程序旁的 `web` 目录（`webui.root` 可改）。从源码构建：`cd webui && npm install && npm run build`，再把 `webui/dist` 复制为 `web`。
 
@@ -59,17 +62,40 @@ catofficial [配置文件]
     { "id": "ws", "name": "正向 WebSocket", "enabled": true, "type": "ws_server", "host": "127.0.0.1", "port": 6700,
       "token": "", "message_format": "array", "report_self": false, "heartbeat_interval": 30000, "bots": [] }
   ],
-  "masters": [ { "bot_id": "", "openid": "…" } ],
+  "masters": [ { "bot_id": "bot1", "openid": "…" } ],
   "notify_masters": true,
   "webhook": { "path": "/webhook/qqbot", "standalone": false, "host": "0.0.0.0", "port": 8443 },
   "smtp": { "enabled": false, "host": "", "port": 465, "security": "ssl", "username": "", "password": "", "from": "", "notify_emails": [], "notify_errors": true },
-  "bind": { "enabled": true, "command": ".bind", "window_seconds": 5, "group_confirm_users": 3, "email_enabled": true, "email_domain": "qq.com", "code_ttl_minutes": 10 },
+  "bind": { "enabled": true, "command": ".bind", "window_seconds": 5, "group_confirm_users": 3, "email_enabled": true, "code_ttl_minutes": 10 },
   "webui": { "enabled": true, "host": "127.0.0.1", "port": 18082, "password": "", "root": "web" },
-  "data_dir": "data", "log_level": "info", "message_retention_days": 7
+  "log_level": "info", "message_retention_days": 365, "image_cache_days": 7
 }
 ```
 
 机器人的 `name` 留空时显示机器人昵称。OneBot 机器人的 `connection` 为 `reverse`（默认，在 NapCat 里添加 WebSocket 客户端连 `ws://host:port/`）或 `forward`（填 `url`，CatOfficial 去连它）。连接的 `bots` 为空表示服务全部官方机器人。Webhook 入口默认挂在面板端口上，`standalone` 为 true 时单独监听 `port`。旧版的单机器人配置（`bot` + `onebot`）启动时会自动转成上面的格式。
+
+数据固定放在配置文件旁的 `data` 目录：数据库 `catofficial.db`、自定义回复 `replies.json`、图片缓存 `cache/images`。聊天记录默认保留 365 天，图片缓存默认保留 7 天（官方给的图片地址会过期，面板显示缓存下来的副本），`0` 表示不删除聊天记录、不缓存图片。主人的 `bot_id` 必须填：同一个用户在不同官方机器人下的 OpenID 各不相同。
+
+## 自定义回复
+
+收到的消息命中规则时，由 CatOfficial 直接回复，默认不再上报给 OneBot 应用（每条规则可改）。写法与 Dice!Next 的自定义回复相同：
+
+- 条件：完全匹配、包含、前缀、正则，多个条件可选「全部满足」或「任一满足」；
+- 回复：可写多条，按权重随机选一条；纯文本或 Markdown；
+- 限制：触发概率、冷却时间（群里按群算，私聊按人算）、只在群聊或私聊、只对哪些机器人生效；优先级数字越大越先匹配。
+
+回复里可以用 `{变量}`，面板编辑回复时点一下即可插入，例如 `{version}`、`{platform}`、`{uptime}`（x天x小时x分钟）、`{cpu}`、`{memory}`、`{bot_name}`、`{bots_online}`、`{sender}`、`{group}`、`{message}`、`{date}`、`{time}`；`{a|b|c}` 随机选一项，正则匹配时 `{$1}` 是第一个捕获组。
+
+自带一条「CatOfficial 状态」，发送 `#catofficial` 或 `#co` 时回复：
+
+```
+CatOfficial 状态
+版本：{version}
+平台：{platform}
+运行时长：{uptime}
+```
+
+它可以修改、停用，或在面板里恢复默认，但不能删除。规则存在 `data/replies.json`。
 
 ## 号码与官民绑定
 
@@ -81,7 +107,7 @@ catofficial [配置文件]
 
 ```
 .bind <暗号>        // 在官方机器人与原 QQ 机器人都在的群里发送，两边几秒内同时收到即完成绑定
-.bind email <QQ号>  // 把验证码发到该 QQ 的邮箱（需要配置 SMTP）
+.bind email <QQ号>  // 把验证码发到 <QQ号>@qq.com（需要配置 SMTP），以此确认真实 QQ 号
 .bind code <验证码> // 用邮件里的验证码完成绑定
 .bind status        // 查看当前绑定
 .bind remove        // 解除自己的绑定
@@ -92,7 +118,7 @@ catofficial [配置文件]
 
 主人也可以在面板的「官民绑定」页手动绑定，或：
 
-- 在 `data_dir` 下放 `bindings.json`，启动时载入：
+- 在 `data` 目录下放 `bindings.json`，启动时载入：
   ```json
   [ { "type": "user", "openid": "…", "qq": 12345678 },
     { "type": "group", "openid": "…", "qq": 87654321 } ]
