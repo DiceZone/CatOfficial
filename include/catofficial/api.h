@@ -4,6 +4,7 @@
 // 结果统一为 {ok, httpStatus, message, data[, error_code]}，调用方不必再分辨各接口
 // 把错误码放在 code 还是 err_code。
 
+#include "log.h"
 #include "protocol.h"
 
 #include <drogon/HttpClient.h>
@@ -11,7 +12,11 @@
 
 #include <cctype>
 #include <cstdint>
+#include <functional>
+#include <optional>
+#include <stdexcept>
 #include <string>
+#include <utility>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -115,5 +120,123 @@ inline json checkedResponse(int status, const json& data) {
     out["error_code"] = code;
     return out;
 }
+
+using Callback = std::function<void(json result)>;
+
+inline const char* methodName(drogon::HttpMethod method) {
+    switch (method) {
+        case drogon::Get: return "GET";
+        case drogon::Post: return "POST";
+        case drogon::Patch: return "PATCH";
+        case drogon::Delete: return "DELETE";
+        default: return "HTTP";
+    }
+}
+
+/// 调用开放平台接口。GET 的 body 平铺为查询串，其余方法作为 JSON 请求体。
+/// 回调收到 checkedResponse() 的结果；请求没有完成时 ok=false、httpStatus=0。
+/// 平台的「无权限」错误记为 debug（不少接口只对内邀或白名单应用开放，普通应用每次
+/// 调用都会稳定返回，这是平台权限而非故障），其余失败记为 warn。
+inline void call(const drogon::HttpClientPtr& client, drogon::HttpMethod method, const std::string& path,
+                 const json& body, const std::string& accessToken, Callback cb,
+                 double timeoutSeconds = 0.0, Logger log = {}) {
+    if (!client) { cb(result(false, 0, std::string("无法解析 ") + kHost)); return; }
+    auto request = drogon::HttpRequest::newHttpRequest();
+    request->setMethod(method);
+    if (method == drogon::Get) {
+        // 查询串已逐段编码，关掉 drogon 的整体编码，否则 ? 与 & 会被转义。
+        const std::string query = queryString(body);
+        request->setPathEncode(false);
+        request->setPath(query.empty() ? path : path + "?" + query);
+    } else {
+        request->setPath(path);
+        if (!body.is_null() && !body.empty()) request->setBody(body.dump());
+    }
+    request->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    request->addHeader("Host", kHost);
+    request->addHeader("Authorization", "QQBot " + accessToken);
+    client->sendRequest(request, [method, path, cb = std::move(cb), log = std::move(log)](
+        drogon::ReqResult outcome, const drogon::HttpResponsePtr& response) mutable {
+        if (outcome != drogon::ReqResult::Ok || !response) {
+            const std::string message = "QQ 官方接口请求未完成: " + path;
+            if (log) log(LogLevel::warn, message + " (" + drogon::to_string(outcome) + ")");
+            cb(result(false, 0, message));
+            return;
+        }
+        const int status = static_cast<int>(response->statusCode());
+        const auto raw = response->body();
+        json data = raw.empty() ? json::object() : json::parse(raw, nullptr, false);
+        auto checked = checkedResponse(status, data);
+        if (!checked.value("ok", false) && log) {
+            const auto code = checked.value("error_code", int64_t(0));
+            const auto message = checked.value("message", std::string());
+            const auto detail = "HTTP " + std::to_string(status) + "，错误码 " + std::to_string(code) + "，" + message;
+            if (isPermissionDenied(status, code, message))
+                log(LogLevel::debug, std::string(methodName(method)) + " " + path + " 无接口访问权限：" + detail);
+            else
+                log(LogLevel::warn, std::string(methodName(method)) + " " + path + " 失败：" + detail);
+        }
+        cb(std::move(checked));
+    }, timeoutSeconds);
+}
+
+struct BotProfile {
+    std::string id, username, avatar, shareUrl;
+};
+
+/// GET /users/@me。请求失败时 profile 与 error 都为空；应答无法解析时 error 为原因。
+inline void fetchProfile(const drogon::HttpClientPtr& client, const std::string& accessToken,
+                         std::function<void(std::optional<BotProfile> profile, std::string error)> done) {
+    if (!client) { done(std::nullopt, {}); return; }
+    auto request = drogon::HttpRequest::newHttpRequest();
+    request->setPath("/users/@me");
+    request->addHeader("Host", kHost);
+    request->addHeader("Authorization", "QQBot " + accessToken);
+    client->sendRequest(request, [done = std::move(done)](drogon::ReqResult outcome, const drogon::HttpResponsePtr& response) {
+        if (outcome != drogon::ReqResult::Ok || !response || response->statusCode() >= 300) { done(std::nullopt, {}); return; }
+        BotProfile profile;
+        try {
+            const auto j = json::parse(response->body());
+            profile.id = protocol::text(j, "id");
+            if (profile.id.empty()) {
+                if (const auto id = protocol::asInteger(j.contains("id") ? j["id"] : json()); id) profile.id = std::to_string(*id);
+            }
+            profile.username = protocol::text(j, "username");
+            profile.avatar = protocol::text(j, "avatar");
+            profile.shareUrl = protocol::text(j, "share_url");
+        } catch (const std::exception& e) { done(std::nullopt, e.what()); return; }
+        done(std::move(profile), {});
+    });
+}
+
+/// POST /v2/generate_url_link，生成机器人分享链接。请求失败时 url 与 error 都为空；
+/// 平台拒绝或应答无效时 error 为原因。
+inline void generateShareUrl(const drogon::HttpClientPtr& client, const std::string& accessToken,
+                             const std::string& callbackData,
+                             std::function<void(std::string url, std::string error)> done) {
+    if (!client) { done({}, {}); return; }
+    auto request = drogon::HttpRequest::newHttpRequest();
+    request->setMethod(drogon::Post);
+    request->setPath("/v2/generate_url_link");
+    request->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    request->addHeader("Host", kHost);
+    request->addHeader("Authorization", "QQBot " + accessToken);
+    request->setBody(json{{"callback_data", callbackData}}.dump());
+    client->sendRequest(request, [done = std::move(done)](drogon::ReqResult outcome, const drogon::HttpResponsePtr& response) {
+        if (outcome != drogon::ReqResult::Ok || !response || response->statusCode() >= 300) { done({}, {}); return; }
+        std::string url;
+        try {
+            const auto j = json::parse(response->body());
+            const auto checked = checkedResponse(static_cast<int>(response->statusCode()), j);
+            if (!checked.value("ok", false)) throw std::runtime_error(checked.value("message", std::string("分享链接接口未成功")));
+            url = protocol::shareUrl(j);
+            if (url.empty()) throw std::runtime_error("响应缺少有效的 data.url");
+        } catch (const std::exception& e) { done({}, e.what()); return; }
+        done(std::move(url), {});
+    });
+}
+
+/// 分享链接里的机器人 QQ 号（robot_uin）；没有时为空。
+inline std::string robotUin(const std::string& shareUrl) { return queryValue(shareUrl, "robot_uin"); }
 
 }  // namespace catofficial::api

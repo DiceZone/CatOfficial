@@ -9,6 +9,7 @@
 
 #include "api.h"
 #include "gateway_socket.h"
+#include "log.h"
 #include "protocol.h"
 
 #include <drogon/HttpAppFramework.h>
@@ -30,7 +31,7 @@ namespace catofficial {
 class Session : public std::enable_shared_from_this<Session> {
 public:
     using json = nlohmann::json;
-    enum class LogLevel { debug, info, warn, error };
+    using LogLevel = catofficial::LogLevel;
 
     struct Options {
         std::string appId;
@@ -53,7 +54,7 @@ public:
         std::function<void()> reconnecting;
         /// 取 Token、取 Gateway 地址或连接失败；会话不再自动重试，由调用方决定。
         std::function<void(const std::string& error)> failed;
-        std::function<void(LogLevel, const std::string&)> log;
+        Logger log;
     };
 
     Session(Options options, Hooks hooks) : options_(std::move(options)), hooks_(std::move(hooks)) {}
