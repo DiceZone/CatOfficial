@@ -8,13 +8,19 @@ import { DashboardPage } from '@/pages/dashboard-page';
 import { MessagesPage } from '@/pages/messages-page';
 import { BindingsPage } from '@/pages/bindings-page';
 import { SettingsPage } from '@/pages/settings-page';
+import { BotsPage } from '@/pages/bots-page';
+import { ConnectionsPage } from '@/pages/connections-page';
+import { LogsPage } from '@/pages/logs-page';
 import { AboutPage } from '@/pages/about-page';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
 
 const PAGES: Record<string, React.FC> = {
   '/': DashboardPage,
+  '/bots': BotsPage,
+  '/connections': ConnectionsPage,
   '/messages': MessagesPage,
+  '/logs': LogsPage,
   '/bindings': BindingsPage,
   '/settings': SettingsPage,
   '/about': AboutPage,

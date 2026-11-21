@@ -1,8 +1,9 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { Activity, Info, Languages, Link2, LogOut, Menu, MessageSquareText, Moon, SlidersHorizontal, Sun, X } from 'lucide-react';
+import { Activity, Bot, Info, Languages, Link2, LogOut, Menu, MessageSquareText, Moon, PlugZap, RotateCw, ScrollText, SlidersHorizontal, Sun, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
@@ -11,15 +12,20 @@ import { LANGUAGES, setLanguage } from '@/i18n';
 import { Brand } from './brand';
 
 type Icon = React.ComponentType<{ className?: string }>;
-interface NavItem { path: string; labelKey: string; icon: Icon; section: 'run' | 'manage' }
+type Section = 'run' | 'manage' | 'system';
+interface NavItem { path: string; labelKey: string; icon: Icon; section: Section }
 
 const NAV: NavItem[] = [
   { path: '/', labelKey: 'nav.dashboard', icon: Activity, section: 'run' },
   { path: '/messages', labelKey: 'nav.messages', icon: MessageSquareText, section: 'run' },
+  { path: '/logs', labelKey: 'nav.logs', icon: ScrollText, section: 'run' },
+  { path: '/bots', labelKey: 'nav.bots', icon: Bot, section: 'manage' },
+  { path: '/connections', labelKey: 'nav.connections', icon: PlugZap, section: 'manage' },
   { path: '/bindings', labelKey: 'nav.bindings', icon: Link2, section: 'manage' },
-  { path: '/settings', labelKey: 'nav.settings', icon: SlidersHorizontal, section: 'manage' },
-  { path: '/about', labelKey: 'nav.about', icon: Info, section: 'manage' },
+  { path: '/settings', labelKey: 'nav.settings', icon: SlidersHorizontal, section: 'system' },
+  { path: '/about', labelKey: 'nav.about', icon: Info, section: 'system' },
 ];
+const SECTIONS: Section[] = ['run', 'manage', 'system'];
 
 interface LayoutProps { children: React.ReactNode; currentPath: string; onNavigate: (path: string) => void }
 
@@ -28,9 +34,9 @@ export function Layout({ children, currentPath, onNavigate }: LayoutProps) {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const go = (path: string) => { onNavigate(path); setMenuOpen(false); };
 
-  const navList = (mobile: boolean) => (['run', 'manage'] as const).map((section) => (
+  const navList = (mobile: boolean) => SECTIONS.map((section) => (
     <div key={section}>
-      <p className="v2-section-label">{t(section === 'run' ? 'nav.section_run' : 'nav.section_manage')}</p>
+      <p className="v2-section-label">{t(`nav.section_${section}`)}</p>
       <div className="space-y-0.5">
         {NAV.filter((item) => item.section === section).map((item) => (
           <button key={item.path} onClick={() => go(item.path)} aria-current={item.path === currentPath ? 'page' : undefined}
@@ -64,10 +70,44 @@ export function Layout({ children, currentPath, onNavigate }: LayoutProps) {
       </DialogPrimitive.Root>
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header currentPath={currentPath} onMenu={() => setMenuOpen(true)} />
+        <RestartBanner />
         <main className="v2-main flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 xl:p-9">
           <div className="v2-workspace space-y-6">{children}</div>
         </main>
       </div>
+    </div>
+  );
+}
+
+/// 配置改动后提示重启。重启期间轮询会话，恢复后刷新页面数据。
+function RestartBanner() {
+  const { t } = useTranslation();
+  const client = useQueryClient();
+  const { data } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
+  const [running, setRunning] = React.useState(false);
+  if (!data?.pending_restart && !running) return null;
+  const restart = async () => {
+    setRunning(true);
+    try {
+      await api.restart();
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        try { await api.status(); break; } catch { /* 还没起来 */ }
+      }
+      await client.invalidateQueries();
+      toast.success(t('restart.done'));
+    } catch (e) {
+      toast.error(t('common.failed', { error: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setRunning(false);
+    }
+  };
+  return (
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm sm:px-6">
+      <span>{t('restart.pending')}</span>
+      <Button size="sm" variant="outline" disabled={running} onClick={restart}>
+        <RotateCw className={cn('mr-2 h-4 w-4', running && 'animate-spin')} />{t(running ? 'restart.running' : 'restart.now')}
+      </Button>
     </div>
   );
 }

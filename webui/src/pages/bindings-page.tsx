@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Search, Unlink } from 'lucide-react';
+import { Check, Plus, Search, Unlink } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -45,6 +45,11 @@ export function BindingsPage() {
     onSuccess: () => { toast.success(t('bindings.added')); setDraft(null); refresh(); },
     onError: fail,
   });
+  const confirmGroup = useMutation({
+    mutationFn: (g: { openid: string; real_group: number }) => api.bind({ type: 'group', openid: g.openid, qq: g.real_group }),
+    onSuccess: () => { toast.success(t('bindings.added')); refresh(); },
+    onError: fail,
+  });
   const unbind = useMutation({
     mutationFn: (i: Identity) => api.unbind(i.type, i.openid),
     onSuccess: (r) => { toast.success(t('bindings.removed', { number: r.number })); setRemoving(null); refresh(); },
@@ -57,6 +62,27 @@ export function BindingsPage() {
     <>
       <PageHeader title={t('bindings.title')} description={t('bindings.description')}
         actions={<Button size="sm" onClick={() => setDraft({ type: 'user', target: '', qq: '' })}><Plus className="mr-2 h-4 w-4" />{t('bindings.add')}</Button>} />
+      <p className="rounded-md border bg-card px-4 py-3 text-sm leading-relaxed text-muted-foreground">{t('bindings.how')}</p>
+
+      {(bindings.data?.pending_groups.length ?? 0) > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('bindings.pending')}</CardTitle>
+            <p className="text-sm text-muted-foreground">{t('bindings.pending_hint', { required: bindings.data?.required_votes })}</p>
+          </CardHeader>
+          <CardContent className="divide-y">
+            {bindings.data!.pending_groups.map((g) => (
+              <div key={`${g.openid}-${g.real_group}`} className="flex flex-wrap items-center gap-3 py-2.5">
+                <span className="text-sm font-medium">{g.name || g.number}</span>
+                <span className="font-mono text-xs text-muted-foreground">→ {g.real_group}</span>
+                <Badge variant="warning">{t('bindings.votes', { votes: g.votes, required: bindings.data!.required_votes })}</Badge>
+                <span className="min-w-0 flex-1 break-all font-mono text-xs text-muted-foreground">{g.openid}</span>
+                <Button size="sm" variant="outline" onClick={() => confirmGroup.mutate(g)}><Check className="mr-1 h-4 w-4" />{t('bindings.confirm')}</Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="overflow-hidden">
         <CardHeader><CardTitle>{t('bindings.list')}</CardTitle></CardHeader>
@@ -72,7 +98,7 @@ export function BindingsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(bindings.data ?? []).map((i) => (
+              {(bindings.data?.bound ?? []).map((i) => (
                 <TableRow key={`${i.type}-${i.openid}`}>
                   <TableCell><Badge variant="neutral">{typeLabel(i.type)}</Badge></TableCell>
                   <TableCell className="font-mono">{i.number}</TableCell>
@@ -86,7 +112,7 @@ export function BindingsPage() {
             </TableBody>
           </Table>
         </div>
-        {bindings.data?.length === 0 && <p className="px-5 pb-5 text-sm text-muted-foreground">{t('bindings.empty')}</p>}
+        {bindings.data?.bound.length === 0 && <p className="px-5 pb-5 text-sm text-muted-foreground">{t('bindings.empty')}</p>}
       </Card>
 
       <Card>
