@@ -19,7 +19,10 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <variant>
 #include <vector>
+
+#define MESSAGE_COLUMNS "id, official_id, scene, peer, sender, time, self, message, ref_idx, bot"
 
 namespace catofficial::app {
 
@@ -38,6 +41,7 @@ public:
         int scene = 0;               // event::Scene
         std::string peer;            // 单聊为用户 OpenID，群为 group_openid
         std::string sender;          // 发送者 OpenID；机器人自己发的为空
+        std::string bot;             // 收发这条消息的机器人（配置里的 id）；旧记录为空
         int64_t time = 0;
         bool self = false;
         nlohmann::json message = nlohmann::json::array();   // OneBot 消息段
@@ -79,6 +83,10 @@ public:
         exec("CREATE INDEX IF NOT EXISTS messages_official ON messages(official_id)");
         if (!hasColumn("messages", "ref_idx")) exec("ALTER TABLE messages ADD COLUMN ref_idx TEXT NOT NULL DEFAULT ''");
         exec("CREATE INDEX IF NOT EXISTS messages_ref ON messages(ref_idx)");
+        if (!hasColumn("messages", "bot")) exec("ALTER TABLE messages ADD COLUMN bot TEXT NOT NULL DEFAULT ''");
+        exec("CREATE INDEX IF NOT EXISTS messages_time ON messages(time)");
+        exec("CREATE INDEX IF NOT EXISTS messages_peer ON messages(peer, id)");
+        if (!hasColumn("names", "avatar")) exec("ALTER TABLE names ADD COLUMN avatar TEXT NOT NULL DEFAULT ''");
     }
     ~Store() { sqlite3_close(db_); }
     Store(const Store&) = delete;
@@ -175,6 +183,20 @@ public:
         s.bind(1, kindName(kind)); s.bind(2, openId); s.bind(3, name); s.bind(4, static_cast<int64_t>(std::time(nullptr)));
         s.run();
     }
+    void rememberAvatar(const std::string& userOpenId, const std::string& url) {
+        if (userOpenId.empty() || url.empty() || url.size() > 2048) return;
+        std::lock_guard lock(mu_);
+        Statement s(db_, "INSERT INTO names(kind, open_id, name, updated, avatar) VALUES('user',?,'',?,?)"
+                         " ON CONFLICT(kind, open_id) DO UPDATE SET avatar=excluded.avatar");
+        s.bind(1, userOpenId); s.bind(2, static_cast<int64_t>(std::time(nullptr))); s.bind(3, url);
+        s.run();
+    }
+    std::string avatar(const std::string& userOpenId) {
+        std::lock_guard lock(mu_);
+        Statement s(db_, "SELECT avatar FROM names WHERE kind='user' AND open_id=?");
+        s.bind(1, userOpenId);
+        return s.step() ? s.text(0) : std::string();
+    }
     std::string name(Kind kind, const std::string& openId) {
         std::lock_guard lock(mu_);
         Statement s(db_, "SELECT name FROM names WHERE kind=? AND open_id=?");
@@ -182,13 +204,16 @@ public:
         return s.step() ? s.text(0) : std::string();
     }
 
-    void rememberMember(const std::string& groupOpenId, const std::string& userOpenId, const std::string& role) {
+    /// card 是群昵称（官方 member_nickname）；为空时保留已知的。
+    void rememberMember(const std::string& groupOpenId, const std::string& userOpenId, const std::string& role, const std::string& card = {}) {
         if (groupOpenId.empty() || userOpenId.empty()) return;
         std::lock_guard lock(mu_);
-        Statement s(db_, "INSERT INTO members(group_id, user_id, role, last_seen) VALUES(?,?,?,?)"
+        Statement s(db_, "INSERT INTO members(group_id, user_id, role, card, last_seen) VALUES(?,?,?,?,?)"
                          " ON CONFLICT(group_id, user_id) DO UPDATE SET last_seen=excluded.last_seen,"
-                         " role=CASE WHEN excluded.role='' THEN members.role ELSE excluded.role END");
-        s.bind(1, groupOpenId); s.bind(2, userOpenId); s.bind(3, role); s.bind(4, static_cast<int64_t>(std::time(nullptr)));
+                         " role=CASE WHEN excluded.role='' THEN members.role ELSE excluded.role END,"
+                         " card=CASE WHEN excluded.card='' THEN members.card ELSE excluded.card END");
+        s.bind(1, groupOpenId); s.bind(2, userOpenId); s.bind(3, role); s.bind(4, card.size() > 1024 ? std::string() : card);
+        s.bind(5, static_cast<int64_t>(std::time(nullptr)));
         s.run();
     }
     void forgetMember(const std::string& groupOpenId, const std::string& userOpenId) {
@@ -220,37 +245,38 @@ public:
     /// 记录一条消息，返回 OneBot message_id。
     int64_t rememberMessage(const Message& m) {
         std::lock_guard lock(mu_);
-        Statement s(db_, "INSERT INTO messages(official_id, scene, peer, sender, time, self, message, ref_idx) VALUES(?,?,?,?,?,?,?,?)");
+        Statement s(db_, "INSERT INTO messages(official_id, scene, peer, sender, time, self, message, ref_idx, bot) VALUES(?,?,?,?,?,?,?,?,?)");
         s.bind(1, m.officialId); s.bind(2, static_cast<int64_t>(m.scene)); s.bind(3, m.peer); s.bind(4, m.sender);
         s.bind(5, m.time); s.bind(6, static_cast<int64_t>(m.self ? 1 : 0)); s.bind(7, m.message.dump()); s.bind(8, m.refIdx);
+        s.bind(9, m.bot);
         s.run();
         // OneBot 的 message_id 是 int32；超出时取低 31 位，与旧记录冲突的概率可以忽略。
         return sqlite3_last_insert_rowid(db_) & 0x7fffffff;
     }
     std::optional<Message> messageById(int64_t id) {
         std::lock_guard lock(mu_);
-        Statement s(db_, "SELECT id, official_id, scene, peer, sender, time, self, message, ref_idx FROM messages WHERE id=?");
+        Statement s(db_, "SELECT " MESSAGE_COLUMNS " FROM messages WHERE id=?");
         s.bind(1, id);
         return s.step() ? std::optional<Message>(row(s)) : std::nullopt;
     }
     std::optional<Message> messageByOfficialId(const std::string& officialId) {
         if (officialId.empty()) return std::nullopt;
         std::lock_guard lock(mu_);
-        Statement s(db_, "SELECT id, official_id, scene, peer, sender, time, self, message, ref_idx FROM messages WHERE official_id=? ORDER BY id DESC LIMIT 1");
+        Statement s(db_, "SELECT " MESSAGE_COLUMNS " FROM messages WHERE official_id=? ORDER BY id DESC LIMIT 1");
         s.bind(1, officialId);
         return s.step() ? std::optional<Message>(row(s)) : std::nullopt;
     }
     std::optional<Message> messageByRefIdx(const std::string& refIdx) {
         if (refIdx.empty()) return std::nullopt;
         std::lock_guard lock(mu_);
-        Statement s(db_, "SELECT id, official_id, scene, peer, sender, time, self, message, ref_idx FROM messages WHERE ref_idx=? ORDER BY id DESC LIMIT 1");
+        Statement s(db_, "SELECT " MESSAGE_COLUMNS " FROM messages WHERE ref_idx=? ORDER BY id DESC LIMIT 1");
         s.bind(1, refIdx);
         return s.step() ? std::optional<Message>(row(s)) : std::nullopt;
     }
     /// 某个会话里最近的消息，新的在前。
     std::vector<Message> recentMessages(const std::string& peer, int limit) {
         std::lock_guard lock(mu_);
-        Statement s(db_, "SELECT id, official_id, scene, peer, sender, time, self, message, ref_idx FROM messages WHERE peer=? ORDER BY id DESC LIMIT ?");
+        Statement s(db_, "SELECT " MESSAGE_COLUMNS " FROM messages WHERE peer=? ORDER BY id DESC LIMIT ?");
         s.bind(1, peer); s.bind(2, static_cast<int64_t>(limit));
         std::vector<Message> out;
         while (s.step()) out.push_back(row(s));
@@ -299,13 +325,101 @@ public:
     /// 全部会话的消息，新的在前，按页取。
     std::vector<Message> recentAll(int limit, int64_t offset) {
         std::lock_guard lock(mu_);
-        Statement s(db_, "SELECT id, official_id, scene, peer, sender, time, self, message, ref_idx FROM messages"
+        Statement s(db_, "SELECT " MESSAGE_COLUMNS " FROM messages"
                          " ORDER BY id DESC LIMIT ? OFFSET ?");
         s.bind(1, static_cast<int64_t>(limit)); s.bind(2, offset);
         std::vector<Message> out;
         while (s.step()) out.push_back(row(s));
         return out;
     }
+    /// 消息记录页的筛选条件。时间是 Unix 秒，0 表示不限。
+    struct MessageQuery {
+        std::string bot, peer, sender, text;
+        int scene = 0;              // 0 = 全部；1 = 私聊；2 = 群（含频道）
+        int64_t from = 0, to = 0;
+        bool ascending = false;
+        int limit = 50;
+        int64_t offset = 0;
+    };
+    /// 按条件查消息，返回本页与总数。text 匹配消息内容（JSON 原文）。
+    std::pair<std::vector<Message>, int64_t> queryMessages(const MessageQuery& q) {
+        std::string where = " WHERE 1=1";
+        std::vector<std::variant<std::string, int64_t>> args;
+        if (!q.bot.empty()) { where += " AND bot=?"; args.emplace_back(q.bot); }
+        if (!q.peer.empty()) { where += " AND peer=?"; args.emplace_back(q.peer); }
+        if (q.sender == "@self") where += " AND self=1";
+        else if (!q.sender.empty()) { where += " AND sender=?"; args.emplace_back(q.sender); }
+        if (q.scene == 1) where += " AND scene=1";
+        else if (q.scene > 1) where += " AND scene<>1";
+        if (q.from > 0) { where += " AND time>=?"; args.emplace_back(q.from); }
+        if (q.to > 0) { where += " AND time<=?"; args.emplace_back(q.to); }
+        if (!q.text.empty()) { where += " AND message LIKE ? ESCAPE '!'"; args.emplace_back("%" + likeEscape(jsonEscaped(q.text)) + "%"); }
+        auto bindAll = [&](Statement& st) {
+            int i = 1;
+            for (const auto& a : args) std::visit([&](const auto& v) { st.bind(i++, v); }, a);
+            return i;
+        };
+        std::lock_guard lock(mu_);
+        int64_t total = 0;
+        {
+            Statement st(db_, ("SELECT COUNT(*) FROM messages" + where).c_str());
+            bindAll(st);
+            if (st.step()) total = sqlite3_column_int64(st.raw(), 0);
+        }
+        const std::string order = q.ascending ? "ASC" : "DESC";
+        Statement st(db_, ("SELECT " MESSAGE_COLUMNS " FROM messages" + where + " ORDER BY time " + order + ", id " + order + " LIMIT ? OFFSET ?").c_str());
+        int i = bindAll(st);
+        st.bind(i++, static_cast<int64_t>(q.limit)); st.bind(i, q.offset);
+        std::vector<Message> out;
+        while (st.step()) out.push_back(row(st));
+        return {std::move(out), total};
+    }
+
+    /// 会话列表：每个会话的最近一条消息，新的在前。bot 为空表示全部机器人。
+    struct Conversation { std::string bot, peer; int scene = 0; int64_t time = 0; int64_t count = 0; Message last; };
+    std::vector<Conversation> conversations(const std::string& bot, int limit) {
+        std::lock_guard lock(mu_);
+        Statement st(db_, "SELECT " MESSAGE_COLUMNS ", (SELECT COUNT(*) FROM messages c WHERE c.peer=m.peer) FROM messages m"
+                          " WHERE m.id IN (SELECT MAX(id) FROM messages WHERE (?='' OR bot=?) AND peer<>'' GROUP BY peer)"
+                          " ORDER BY m.time DESC, m.id DESC LIMIT ?");
+        st.bind(1, bot); st.bind(2, bot); st.bind(3, static_cast<int64_t>(limit));
+        std::vector<Conversation> out;
+        while (st.step()) {
+            Conversation c;
+            c.last = row(st);
+            c.bot = c.last.bot; c.peer = c.last.peer; c.scene = c.last.scene; c.time = c.last.time;
+            c.count = sqlite3_column_int64(st.raw(), 10);
+            out.push_back(std::move(c));
+        }
+        return out;
+    }
+    /// 一个会话的消息，从旧到新。afterId > 0 时取比它新的；否则取 beforeId（0 = 最新）之前的 limit 条。
+    std::vector<Message> conversationMessages(const std::string& peer, int64_t beforeId, int64_t afterId, int limit) {
+        std::lock_guard lock(mu_);
+        std::vector<Message> out;
+        if (afterId > 0) {
+            Statement st(db_, "SELECT " MESSAGE_COLUMNS " FROM messages WHERE peer=? AND id>? ORDER BY id ASC LIMIT ?");
+            st.bind(1, peer); st.bind(2, afterId); st.bind(3, static_cast<int64_t>(limit));
+            while (st.step()) out.push_back(row(st));
+            return out;
+        }
+        Statement st(db_, "SELECT " MESSAGE_COLUMNS " FROM messages WHERE peer=? AND (?=0 OR id<?) ORDER BY id DESC LIMIT ?");
+        st.bind(1, peer); st.bind(2, beforeId); st.bind(3, beforeId); st.bind(4, static_cast<int64_t>(limit));
+        while (st.step()) out.push_back(row(st));
+        std::reverse(out.begin(), out.end());
+        return out;
+    }
+    /// 出现过的发送者与会话（消息记录页的筛选下拉用），近的在前。
+    std::vector<std::pair<std::string, std::string>> senders(int limit) {
+        std::lock_guard lock(mu_);
+        Statement st(db_, "SELECT m.sender, COALESCE(n.name, '') FROM messages m LEFT JOIN names n ON n.kind='user' AND n.open_id=m.sender"
+                          " WHERE m.sender<>'' GROUP BY m.sender ORDER BY MAX(m.id) DESC LIMIT ?");
+        st.bind(1, static_cast<int64_t>(limit));
+        std::vector<std::pair<std::string, std::string>> out;
+        while (st.step()) out.emplace_back(st.text(0), st.text(1));
+        return out;
+    }
+
     int64_t count(const char* table) {
         std::lock_guard lock(mu_);
         Statement s(db_, (std::string("SELECT COUNT(*) FROM ") + table).c_str());
@@ -402,7 +516,20 @@ private:
         m.message = nlohmann::json::parse(s.text(7), nullptr, false);
         if (!m.message.is_array()) m.message = nlohmann::json::array();
         m.refIdx = s.text(8);
+        m.bot = s.text(9);
         return m;
+    }
+
+    /// 消息存的是 JSON；搜索词按 JSON 字符串转义后再比，引号与换行才对得上。
+    static std::string jsonEscaped(const std::string& text) {
+        auto dumped = nlohmann::json(text).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+        return dumped.size() >= 2 ? dumped.substr(1, dumped.size() - 2) : std::string();
+    }
+    /// LIKE 的通配符用 ! 转义。
+    static std::string likeEscape(const std::string& text) {
+        std::string out;
+        for (char c : text) { if (c == '%' || c == '_' || c == '!') out += '!'; out += c; }
+        return out;
     }
 
     std::optional<int64_t> numberLocked(Kind kind, const std::string& openId) {

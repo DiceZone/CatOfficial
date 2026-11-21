@@ -79,12 +79,11 @@ struct BindConfig {
     std::string command = ".bind";
     int windowSeconds = 5;
     int groupConfirmUsers = 3;
-    bool emailEnabled = true;
-    std::string emailDomain = "qq.com";
+    bool emailEnabled = true;          // 验证码固定发到 <QQ号>@qq.com，才能确定真实 QQ 号
     int codeTtlMinutes = 10;
 };
 
-/// 主人：某个官方机器人（为空表示全部）上的 OpenID。
+/// 主人：某个官方机器人上的 OpenID。同一个用户在不同官方机器人下的 OpenID 各不相同，所以必须指定机器人。
 struct MasterConfig {
     std::string botId;
     std::string openId;
@@ -111,16 +110,16 @@ struct Config {
     std::string webuiPassword;          // 为空时首次启动自动生成并写回配置文件
     std::string webuiRoot = "web";      // 前端文件目录，相对配置文件所在目录
 
-    std::string dataDir = "data";
     std::string logLevel = "info";
-    int messageRetentionDays = 7;
+    int messageRetentionDays = 365;     // 聊天记录保留天数
+    int imageCacheDays = 7;             // 图片缓存保留天数
 
     const BotConfig* bot(const std::string& id) const {
         for (const auto& b : bots) if (b.id == id) return &b;
         return nullptr;
     }
     bool isMaster(const std::string& botId, const std::string& openId) const {
-        for (const auto& m : masters) if (m.openId == openId && (m.botId.empty() || m.botId == botId)) return true;
+        for (const auto& m : masters) if (!m.botId.empty() && m.openId == openId && m.botId == botId) return true;
         return false;
     }
 };
@@ -135,17 +134,25 @@ inline const char* kConfigTemplate = R"({
   "notify_masters": true,
   "webhook": { "path": "/webhook/qqbot", "standalone": false, "host": "0.0.0.0", "port": 8443 },
   "smtp": { "enabled": false, "host": "", "port": 465, "security": "ssl", "username": "", "password": "", "from": "", "notify_emails": [], "notify_errors": true },
-  "bind": { "enabled": true, "command": ".bind", "window_seconds": 5, "group_confirm_users": 3, "email_enabled": true, "email_domain": "qq.com", "code_ttl_minutes": 10 },
+  "bind": { "enabled": true, "command": ".bind", "window_seconds": 5, "group_confirm_users": 3, "email_enabled": true, "code_ttl_minutes": 10 },
   "webui": { "enabled": true, "host": "127.0.0.1", "port": 18082, "password": "", "root": "web" },
-  "data_dir": "data",
   "log_level": "info",
-  "message_retention_days": 7
+  "message_retention_days": 365,
+  "image_cache_days": 7
 }
 )";
 
 /// 旧格式（单个 bot + onebot 段）转成新格式；已是新格式时原样返回。
 inline nlohmann::json migrateConfig(nlohmann::json j) {
     using json = nlohmann::json;
+    // 0.1.0 早期的配置：聊天记录默认只留 7 天、数据目录与邮箱域名可改。现在默认留 365 天、
+    // 另设图片缓存天数，数据目录固定为 data，验证码固定发到 QQ 邮箱。没改过的旧默认值一并换新。
+    if (j.is_object() && !j.contains("image_cache_days") && !j.empty()) {
+        if (j.value("message_retention_days", 7) == 7) j["message_retention_days"] = 365;
+        j["image_cache_days"] = 7;
+        j.erase("data_dir");
+        if (j.contains("bind") && j["bind"].is_object()) j["bind"].erase("email_domain");
+    }
     if (!j.is_object() || j.contains("bots") || !j.contains("bot")) return j;
     const auto bot = j.value("bot", json::object());
     json bots = json::array();
@@ -221,7 +228,7 @@ inline Config parseConfig(const nlohmann::json& input) {
 
     for (const auto& m : j.value("masters", json::array())) {
         MasterConfig master{m.value("bot_id", std::string()), m.value("openid", std::string())};
-        if (!master.openId.empty()) c.masters.push_back(master);
+        if (!master.openId.empty() && !master.botId.empty()) c.masters.push_back(master);
     }
     c.notifyMasters = j.value("notify_masters", true);
 
@@ -288,7 +295,6 @@ inline Config parseConfig(const nlohmann::json& input) {
     c.bind.windowSeconds = bind.value("window_seconds", c.bind.windowSeconds);
     c.bind.groupConfirmUsers = bind.value("group_confirm_users", c.bind.groupConfirmUsers);
     c.bind.emailEnabled = bind.value("email_enabled", c.bind.emailEnabled);
-    c.bind.emailDomain = bind.value("email_domain", c.bind.emailDomain);
     c.bind.codeTtlMinutes = bind.value("code_ttl_minutes", c.bind.codeTtlMinutes);
     if (c.bind.command.empty()) throw std::runtime_error("bind.command 不能为空");
     if (c.bind.windowSeconds < 1 || c.bind.windowSeconds > 60) throw std::runtime_error("bind.window_seconds 须在 1 到 60 之间");
@@ -310,9 +316,10 @@ inline Config parseConfig(const nlohmann::json& input) {
         if (ports.count(c.webhookPort) || (c.webuiEnabled && c.webhookPort == c.webuiPort)) throw std::runtime_error("Webhook 独立端口与其他端口重复");
     }
 
-    c.dataDir = j.value("data_dir", c.dataDir);
     c.logLevel = j.value("log_level", c.logLevel);
     c.messageRetentionDays = j.value("message_retention_days", c.messageRetentionDays);
+    c.imageCacheDays = j.value("image_cache_days", c.imageCacheDays);
+    if (c.messageRetentionDays < 0 || c.imageCacheDays < 0) throw std::runtime_error("保留天数不能为负数");
     return c;
 }
 

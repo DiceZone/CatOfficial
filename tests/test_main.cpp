@@ -4,6 +4,7 @@
 #include "../app/config.h"
 #include "../app/onebot.h"
 #include "../app/relay.h"
+#include "../app/replies.h"
 #include "../app/store.h"
 
 #include <catofficial/bot.h>
@@ -314,6 +315,126 @@ TEST(BindCommandPairsOfficialAndLegacySides) {
     CHECK(!store->bound(Kind::user, "U1"));
     // 普通消息不拦截。
     CHECK(!service->onOfficial("b", official("U1", "你好"), reply));
+}
+
+TEST(CustomRepliesMatchRenderAndKeepBuiltin) {
+    const auto file = std::filesystem::temp_directory_path() / "catofficial-test-replies.json";
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+    ReplyService service(file);
+    // 第一次载入时补上自带的状态规则。
+    CHECK_EQ(service.rules().size(), std::size_t(1));
+    CHECK(service.rules()[0].builtin);
+    ReplyInput in{"bot1", true, "G1", "#co"};
+    auto m = service.match(in);
+    CHECK(m.has_value());
+    ReplyVariables vars{{"version", "0.1.0"}, {"platform", "Windows 11"}, {"uptime", "1天2小时3分钟"}};
+    CHECK_EQ(service.render(m->result, vars, m->captures), std::string("CatOfficial 状态\n版本：0.1.0\n平台：Windows 11\n运行时长：1天2小时3分钟"));
+    in.text = "#co 多余";
+    CHECK(!service.match(in).has_value());   // 完全匹配
+
+    // 正则、捕获组、优先级与范围。
+    auto rule = parseReplyRule(json{{"name", "掷骰"}, {"priority", 200}, {"scope", "private"},
+                                    {"conditions", json::array({json{{"type", "regex"}, {"content", "^roll (\\d+)$"}}})},
+                                    {"results", json::array({"你掷出了 {$1}，{a|a}"})}});
+    service.save(rule);
+    ReplyInput dm{"bot1", false, "U1", "roll 42"};
+    m = service.match(dm);
+    CHECK(m.has_value());
+    CHECK_EQ(service.render(m->result, {}, m->captures), std::string("你掷出了 42，a"));
+    dm.group = true;
+    CHECK(!service.match(dm).has_value());   // 只在私聊生效
+
+    // 冷却：同一会话第二次不回，试一试（dryRun）不受影响。
+    auto cooled = parseReplyRule(json{{"conditions", json::array({json{{"type", "search"}, {"content", "早"}}})},
+                                      {"results", json::array({"早安"})}, {"cooldown_sec", 60}});
+    service.save(cooled);
+    ReplyInput hi{"bot1", true, "G9", "大家早"};
+    CHECK(service.match(hi).has_value());
+    CHECK(!service.match(hi).has_value());
+    CHECK(service.match(hi, true).has_value());
+
+    // 自带规则不能删，可以恢复默认；规则会写进文件。
+    {
+        bool threw = false;
+        try { service.remove("builtin-status"); } catch (const std::exception&) { threw = true; }
+        CHECK(threw);
+    }
+    ReplyService reloaded(file);
+    CHECK_EQ(reloaded.rules().size(), std::size_t(3));
+    bool badRegex = false;
+    try { parseReplyRule(json{{"conditions", json::array({json{{"type", "regex"}, {"content", "("}}})}, {"results", json::array({"x"})}}); }
+    catch (const std::exception&) { badRegex = true; }
+    CHECK(badRegex);
+}
+
+TEST(MessageQueryFiltersAndSearches) {
+    auto store = std::make_shared<Store>(tempDb("query").string());
+    auto add = [&](const std::string& bot, int scene, const std::string& peer, const std::string& sender, int64_t time, const std::string& text) {
+        Store::Message m;
+        m.bot = bot; m.scene = scene; m.peer = peer; m.sender = sender; m.time = time; m.self = sender.empty();
+        m.message = json::array({onebot::text(text)});
+        store->rememberMessage(m);
+    };
+    add("b1", 2, "G1", "U1", 100, "你好 \"世界\"");
+    add("b1", 2, "G1", "U2", 200, "掷骰 .r");
+    add("b1", 1, "U1", "U1", 300, "私聊一句");
+    add("b2", 1, "U3", "", 400, "机器人发的");
+    Store::MessageQuery q;
+    auto [all, total] = store->queryMessages(q);
+    CHECK_EQ(total, int64_t(4));
+    CHECK_EQ(all.front().time, int64_t(400));   // 默认新的在前
+    q.ascending = true;
+    CHECK_EQ(store->queryMessages(q).first.front().time, int64_t(100));
+    q = {}; q.scene = 1;
+    CHECK_EQ(store->queryMessages(q).second, int64_t(2));
+    q = {}; q.text = "\"世界\"";
+    CHECK_EQ(store->queryMessages(q).second, int64_t(1));
+    q = {}; q.text = "%";
+    CHECK_EQ(store->queryMessages(q).second, int64_t(0));
+    q = {}; q.sender = "U1";
+    CHECK_EQ(store->queryMessages(q).second, int64_t(2));
+    q = {}; q.sender = "@self";
+    CHECK_EQ(store->queryMessages(q).second, int64_t(1));
+    q = {}; q.from = 150; q.to = 350;
+    CHECK_EQ(store->queryMessages(q).second, int64_t(2));
+    q = {}; q.bot = "b2";
+    CHECK_EQ(store->queryMessages(q).second, int64_t(1));
+    q = {}; q.peer = "G1"; q.limit = 1; q.offset = 1;
+    auto page = store->queryMessages(q);
+    CHECK_EQ(page.second, int64_t(2));
+    CHECK_EQ(page.first.size(), std::size_t(1));
+    const auto conversations = store->conversations("", 10);
+    CHECK_EQ(conversations.size(), std::size_t(3));
+    CHECK_EQ(conversations.front().peer, std::string("U3"));
+    CHECK_EQ(store->conversations("b1", 10).size(), std::size_t(2));
+    CHECK_EQ(store->conversationMessages("G1", 0, 0, 10).size(), std::size_t(2));
+}
+
+TEST(GroupMessageCarriesMemberNicknameAndAtAll) {
+    const json d{{"id", "m9"}, {"content", "<@all> 开会了"}, {"group_openid", "G1"}, {"union_group_openid", "UG1"},
+                 {"author", {{"member_openid", "U1"}, {"username", "希亚"}, {"member_nickname", "群里的希亚"}, {"avatar", "https://a/b"}}}};
+    auto e = event::parseMessage("GROUP_MESSAGE_CREATE", d, "ev9", "BOT", "APP");
+    CHECK(e.has_value());
+    CHECK_EQ(e->memberNickname, std::string("群里的希亚"));
+    CHECK_EQ(e->username, std::string("希亚"));
+    CHECK_EQ(e->avatar, std::string("https://a/b"));
+    CHECK_EQ(e->unionGroupOpenId, std::string("UG1"));
+    onebot::Resolver r;
+    r.user = [](const std::string&) { return int64_t(2000000000001); };
+    const auto segs = onebot::incomingSegments(*e, 0, r);
+    CHECK_EQ(segs[0]["type"].get<std::string>(), std::string("at"));
+    CHECK_EQ(segs[0]["data"]["qq"].get<std::string>(), std::string("all"));
+}
+
+TEST(MastersMustNameABot) {
+    auto c = parseConfig(json{{"masters", json::array({json{{"bot_id", ""}, {"openid", "X"}}, json{{"bot_id", "b1"}, {"openid", "Y"}}})}});
+    CHECK_EQ(c.masters.size(), std::size_t(1));
+    CHECK(c.isMaster("b1", "Y"));
+    CHECK(!c.isMaster("b2", "Y"));
+    CHECK(!c.isMaster("b1", "X"));
+    CHECK_EQ(c.messageRetentionDays, 365);
+    CHECK_EQ(c.imageCacheDays, 7);
 }
 
 }  // namespace

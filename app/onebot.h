@@ -209,6 +209,7 @@ inline std::size_t parseMention(std::string_view text, std::string& openId, bool
         auto id = text.substr(2, end - 2);
         if (id.starts_with("!")) id.remove_prefix(1);
         if (id.empty() || id.find_first_of(" <\"'") != std::string_view::npos) return 0;
+        if (id == "all") { everyone = true; return end + 1; }   // 群消息里的 @全体成员
         openId = std::string(id);
         return end + 1;
     }

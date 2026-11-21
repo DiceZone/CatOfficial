@@ -7,16 +7,20 @@
 
 #include "bind.h"
 #include "config.h"
+#include "imagecache.h"
 #include "legacy.h"
 #include "logbuf.h"
 #include "mailer.h"
 #include "relay.h"
+#include "replies.h"
 #include "store.h"
+#include "sysinfo.h"
 
 #include <catofficial/webhook.h>
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -35,6 +39,10 @@ public:
 
     Hub(Config config, std::shared_ptr<Store> store, Logger log)
         : config_(std::move(config)), store_(std::move(store)), log_(std::move(log)) {}
+
+    void setReplies(std::shared_ptr<ReplyService> replies) { std::lock_guard lock(mu_); replies_ = std::move(replies); }
+    std::shared_ptr<ReplyService> replies() const { std::lock_guard lock(mu_); return replies_; }
+    std::time_t startedAt() const { return started_; }
 
     void init() {
         mailer_ = std::make_shared<Mailer>(config_.smtp, log_);
@@ -62,6 +70,7 @@ public:
         const auto previous = config();
         { std::lock_guard lock(mu_); config_ = next; }
         mailer_->setConfig(next.smtp);
+        ImageCache::get().setDays(next.imageCacheDays);
         applyBots(previous.bots, next.bots);
         LogBuffer::get().setMinimum(next.logLevel);
     }
@@ -170,6 +179,113 @@ public:
     void prune() {
         const int days = config().messageRetentionDays;
         if (days > 0) store_->pruneMessages(static_cast<int64_t>(std::time(nullptr)) - static_cast<int64_t>(days) * 86400);
+        std::thread([] { ImageCache::get().prune(); }).detach();
+    }
+
+    // ── 自定义回复的变量 ────────────────────────────────────
+
+    /// 运行时长写成「x天x小时x分钟」。
+    static std::string formatUptime(int64_t seconds) {
+        if (seconds < 0) seconds = 0;
+        return std::to_string(seconds / 86400) + "天" + std::to_string(seconds % 86400 / 3600) + "小时" + std::to_string(seconds % 3600 / 60) + "分钟";
+    }
+    static std::string formatTime(std::time_t t, const char* format) {
+        std::tm tm{};
+#ifdef _WIN32
+        localtime_s(&tm, &t);
+#else
+        localtime_r(&t, &tm);
+#endif
+        char buf[64];
+        std::strftime(buf, sizeof(buf), format, &tm);
+        return buf;
+    }
+
+    /// 变量说明（管理面板的变量列表用），顺序即显示顺序。
+    static const std::vector<std::pair<std::string, std::string>>& variableHelp() {
+        static const std::vector<std::pair<std::string, std::string>> list{
+            {"version", "CatOfficial 版本"}, {"platform", "运行平台（操作系统）"}, {"arch", "处理器架构"},
+            {"uptime", "运行时长（x天x小时x分钟）"}, {"uptime_days", "运行天数"}, {"uptime_hours", "运行时长的小时部分"},
+            {"uptime_minutes", "运行时长的分钟部分"}, {"uptime_seconds", "运行总秒数"}, {"start_time", "启动时间"},
+            {"date", "当前日期"}, {"time", "当前时间"}, {"datetime", "当前日期与时间"},
+            {"cpu", "CPU 占用（%）"}, {"cpu_model", "CPU 型号"}, {"memory", "内存占用（%）"}, {"mem_used", "已用内存"},
+            {"mem_total", "内存总量"}, {"process_memory", "CatOfficial 占用的内存"},
+            {"bot_name", "当前机器人名称"}, {"bot_appid", "当前机器人 AppID"}, {"bot_received", "当前机器人收到的消息数"},
+            {"bot_sent", "当前机器人发出的消息数"}, {"bot_count", "官方机器人总数"}, {"bots_online", "在线的官方机器人数"},
+            {"onebot_bots", "OneBot 机器人数"}, {"connections", "已启用的 OneBot 连接数"},
+            {"received", "全部机器人收到的消息数"}, {"sent", "全部机器人发出的消息数"},
+            {"sender", "发送者昵称"}, {"sender_card", "发送者群昵称"}, {"sender_id", "发送者号码（OneBot user_id）"},
+            {"sender_openid", "发送者 OpenID"}, {"group", "群名称"}, {"group_id", "群号（OneBot group_id）"},
+            {"group_openid", "群 OpenID"}, {"message", "收到的消息内容"},
+        };
+        return list;
+    }
+
+    /// 按当前运行状态（以及触发的消息，可为空）填好变量。
+    ReplyVariables variables(const Relay* relay, const event::MessageEvent* e) {
+        ReplyVariables v;
+        const auto now = std::time(nullptr);
+        const auto up = static_cast<int64_t>(now - started_);
+        const auto info = sysinfo::HistorySampler::instance().latest();
+        auto mb = [](uint64_t n) { return n >= 1024 ? std::to_string(n / 1024) + "." + std::to_string(n % 1024 * 10 / 1024) + " GB" : std::to_string(n) + " MB"; };
+        v["version"] = kVersion;
+        v["platform"] = info.os;
+#if defined(_M_ARM64) || defined(__aarch64__)
+        v["arch"] = "arm64";
+#elif defined(_M_X64) || defined(__x86_64__)
+        v["arch"] = "x64";
+#else
+        v["arch"] = "x86";
+#endif
+        v["uptime"] = formatUptime(up);
+        v["uptime_days"] = std::to_string(up / 86400);
+        v["uptime_hours"] = std::to_string(up % 86400 / 3600);
+        v["uptime_minutes"] = std::to_string(up % 3600 / 60);
+        v["uptime_seconds"] = std::to_string(up);
+        v["start_time"] = formatTime(started_, "%Y-%m-%d %H:%M:%S");
+        v["date"] = formatTime(now, "%Y-%m-%d");
+        v["time"] = formatTime(now, "%H:%M:%S");
+        v["datetime"] = formatTime(now, "%Y-%m-%d %H:%M:%S");
+        v["cpu"] = info.cpuLoadPct < 0 ? std::string("—") : std::to_string(static_cast<int>(info.cpuLoadPct + 0.5)) + "%";
+        v["cpu_model"] = info.cpuModel;
+        v["memory"] = std::to_string(info.memLoadPct) + "%";
+        v["mem_used"] = mb(info.memUsedMB);
+        v["mem_total"] = mb(info.memTotalMB);
+        v["process_memory"] = mb(info.procMemMB);
+        const auto running = relays();
+        const auto cfg = config();
+        int online = 0, onebot = 0, conns = 0;
+        for (const auto& r : running) if (r->bot()->online()) ++online;
+        for (const auto& b : cfg.bots) if (b.enabled && !b.official()) ++onebot;
+        for (const auto& c : cfg.connections) if (c.enabled) ++conns;
+        v["bot_count"] = std::to_string(running.size());
+        v["bots_online"] = std::to_string(online);
+        v["onebot_bots"] = std::to_string(onebot);
+        v["connections"] = std::to_string(conns);
+        v["received"] = std::to_string(received());
+        v["sent"] = std::to_string(sent());
+        if (relay) {
+            v["bot_name"] = relay->displayName();
+            v["bot_appid"] = relay->config().appId;
+            v["bot_received"] = std::to_string(relay->received());
+            v["bot_sent"] = std::to_string(relay->sent());
+        }
+        if (e) {
+            const bool group = e->scene != event::Scene::direct;
+            const auto name = store_->name(Kind::user, e->senderId);
+            v["sender"] = name.empty() ? e->username : name;
+            v["sender_card"] = e->memberNickname.empty() ? v["sender"] : e->memberNickname;
+            v["sender_id"] = std::to_string(store_->number(Kind::user, e->senderId));
+            v["sender_openid"] = e->senderId;
+            v["message"] = event::trim(e->content);
+            if (group) {
+                const auto peer = e->scene == event::Scene::channel ? "channel:" + e->targetId : e->targetId;
+                v["group"] = store_->name(Kind::group, peer);
+                v["group_id"] = std::to_string(store_->number(Kind::group, peer));
+                v["group_openid"] = e->targetId;
+            }
+        }
+        return v;
     }
 
     uint64_t received() const { uint64_t n = 0; for (const auto& r : relays()) n += r->received(); return n; }
@@ -270,9 +386,36 @@ private:
         hooks.intercept = [weak](Relay& relay, const event::MessageEvent& e) {
             auto self = weak.lock(); if (!self) return false;
             std::weak_ptr<Relay> r = relay.weak_from_this();
-            return self->bind()->onOfficial(relay.id(), e, [r, e](const std::string& text) { if (auto relay = r.lock()) relay->replyText(e, text); });
+            if (self->bind()->onOfficial(relay.id(), e, [r, e](const std::string& text) { if (auto relay = r.lock()) relay->replyText(e, text); }))
+                return true;
+            return self->customReply(relay, e);
         };
+        hooks.images = [](const std::vector<std::string>& urls) { ImageCache::get().enqueue(urls); };
         return hooks;
+    }
+
+    /// 自定义回复；命中且不需要再转给 OneBot 应用时返回 true。
+    bool customReply(Relay& relay, const event::MessageEvent& e) {
+        auto service = replies();
+        if (!service) return false;
+        ReplyInput in;
+        in.botId = relay.id();
+        in.group = e.scene != event::Scene::direct;
+        in.conversation = in.group ? e.targetId : e.senderId;
+        in.text = event::trim(e.content);
+        auto match = service->match(in);
+        if (!match) return false;
+        const auto text = service->render(match->result, variables(&relay, &e), match->captures);
+        if (text.empty()) return !match->rule.passThrough;
+        json segments = json::array();
+        if (match->rule.format == "markdown") segments.push_back(json{{"type", "markdown"}, {"data", {{"content", text}}}});
+        else segments.push_back(onebot::text(text));
+        say(LogLevel::info, "自定义回复「" + (match->rule.name.empty() ? match->rule.id : match->rule.name) + "」命中");
+        auto log = log_;
+        relay.replySegments(e, segments, [log](json r) {
+            if (r.value("status", std::string()) != "ok" && log) log(LogLevel::warn, "自定义回复发送失败：" + r.value("message", std::string()));
+        });
+        return !match->rule.passThrough;
     }
 
     // ── 运行异常通知 ────────────────────────────────────────
@@ -308,14 +451,9 @@ private:
         for (std::size_t i = 0; i < errors.size() && i < 3; ++i) brief += "\n· " + errors[i];
         if (errors.size() > 3) brief += "\n……详见管理面板的运行日志";
         const auto running = relays();
-        for (const auto& m : cfg.masters) {
-            for (const auto& r : running) {
-                if (!m.botId.empty() && m.botId != r->id()) continue;
-                if (!r->bot()->online()) continue;
-                r->sendPrivateText(m.openId, brief);
-                break;   // 「全部机器人」的主人只由第一个在线的机器人通知一次
-            }
-        }
+        for (const auto& m : cfg.masters)
+            for (const auto& r : running)
+                if (r->id() == m.botId && r->bot()->online()) r->sendPrivateText(m.openId, brief);
     }
 
     void dispatch(const std::string* connId, const std::string& botId, const json& event) {
@@ -340,6 +478,8 @@ private:
     bool flushScheduled_ = false;
     std::time_t lastFlush_ = 0;
     mutable std::mutex mu_;
+    std::time_t started_ = std::time(nullptr);
+    std::shared_ptr<ReplyService> replies_;
     Config config_;
     std::shared_ptr<Store> store_;
     Logger log_;

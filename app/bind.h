@@ -188,7 +188,7 @@ private:
             code.insert(0, 6 - code.size(), '0');
             codes_[e.senderId] = Code{qq, code, now + config_.codeTtlMinutes * 60, 0};
         }
-        const auto address = qqText + "@" + config_.emailDomain;
+        const auto address = qqText + "@qq.com";
         const auto minutes = std::to_string(config_.codeTtlMinutes);
         const auto body = "你正在把 QQ " + qqText + " 关联到官方机器人上的身份。\n\n验证码：" + code + "\n\n"
             + minutes + " 分钟内在机器人对话里发送「" + config_.command + " code " + code + "」即可完成绑定。\n如果不是你本人操作，请忽略这封邮件。";
@@ -196,7 +196,7 @@ private:
         mailer_->send(address, "QQ 身份绑定验证码", body, [reply, qqText, minutes, weak](bool ok, const std::string&) {
             drogon::app().getLoop()->queueInLoop([reply, ok, qqText, minutes, weak] {
                 auto self = weak.lock(); if (!self) return;
-                reply(ok ? "验证码已发到 " + mask(std::stoll(qqText)) + "@" + self->config_.emailDomain + "，请在 " + minutes + " 分钟内发送「"
+                reply(ok ? "验证码已发到 " + mask(std::stoll(qqText)) + "@qq.com，请在 " + minutes + " 分钟内发送「"
                                + self->config_.command + " code 验证码」完成绑定"
                          : "验证码邮件发送失败，请稍后再试或联系机器人主人");
             });

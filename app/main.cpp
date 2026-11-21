@@ -117,8 +117,8 @@ int main(int argc, char** argv) {
     const auto log = makeLogger();
     LogBuffer::get().setLogger(log);
     const bool newPassword = WebUi::ensurePassword(configPath, config);
-    fs::path dataDir = fromUtf8(config.dataDir);
-    if (dataDir.is_relative()) dataDir = configPath.parent_path() / dataDir;
+    // 数据目录固定为配置文件旁的 data。
+    const fs::path dataDir = configPath.parent_path() / "data";
     fs::create_directories(dataDir, ec);
 
     std::shared_ptr<Store> store;
@@ -129,7 +129,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    ImageCache::get().setDays(config.imageCacheDays);
+    ImageCache::get().start(dataDir / "cache" / "images", log);
+    sysinfo::HistorySampler::instance().start(dataDir);
+
     auto hub = std::make_shared<Hub>(config, store, log);
+    hub->setReplies(std::make_shared<ReplyService>(dataDir / "replies.json"));
     hub->init();
     hub->loadBindings(dataDir / "bindings.json");
     Server::setup(hub);
@@ -138,7 +143,7 @@ int main(int argc, char** argv) {
     log(catofficial::LogLevel::info, std::string("CatOfficial ") + kVersion + " 启动中");
     int officials = 0, legacies = 0;
     for (const auto& b : config.bots) if (b.enabled) (b.official() ? officials : legacies)++;
-    log(catofficial::LogLevel::info, "官方机器人 " + std::to_string(officials) + " 个，原 QQ 机器人 " + std::to_string(legacies) + " 个");
+    log(catofficial::LogLevel::info, "官方机器人 " + std::to_string(officials) + " 个，OneBot 机器人 " + std::to_string(legacies) + " 个");
     if (!officials) log(catofficial::LogLevel::warn, "还没有启用的官方机器人，请在管理面板的「登录管理」里添加");
     if (config.webhookStandalone)
         log(catofficial::LogLevel::info, "官方 Webhook 入口：" + config.webhookHost + ":" + std::to_string(config.webhookPort) + config.webhookPath);
@@ -159,6 +164,7 @@ int main(int argc, char** argv) {
     });
     drogon::app().run();
     hub->stop();
+    ImageCache::get().stop();
     curl_global_cleanup();
     if (WebUi::restartRequested()) {
         log(catofficial::LogLevel::info, "正在重启");

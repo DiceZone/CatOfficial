@@ -7,6 +7,7 @@
 #include "config.h"
 #include "hub.h"
 #include "logbuf.h"
+#include "panel.h"
 #include "paths.h"
 #include "server.h"
 
@@ -183,11 +184,81 @@ public:
             for (const auto& i : state().hub->store()->searchIdentities(req->getParameter("q"), 50)) list.push_back(identityJson(i));
             cb(jsonResponse(200, list));
         });
+        // 消息记录
         route("/api/webui/messages", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
-            int64_t page = 1; int size = 50;
-            try { if (!req->getParameter("page").empty()) page = std::max<int64_t>(1, std::stoll(req->getParameter("page"))); } catch (...) {}
-            try { if (!req->getParameter("size").empty()) size = std::clamp(std::stoi(req->getParameter("size")), 1, 200); } catch (...) {}
-            cb(jsonResponse(200, json{{"total", state().hub->store()->count("messages")}, {"items", messages(size, (page - 1) * size)}}));
+            panel::messages(*state().hub, params(req), respond(std::move(cb)));
+        });
+        route("/api/webui/message-filters", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
+            panel::messageFilters(*state().hub, respond(std::move(cb)));
+        });
+        route("/api/webui/image/{name}", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            const auto path = ImageCache::get().pathOf(param(req));
+            if (path.empty()) { cb(notFound()); return; }
+            auto resp = drogon::HttpResponse::newFileResponse(utf8(path));
+            resp->addHeader("Cache-Control", "private, max-age=86400");
+            cb(resp);
+        });
+        route("/api/webui/image-cache", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
+            const auto [files, bytes] = ImageCache::get().usage();
+            cb(jsonResponse(200, json{{"files", files}, {"bytes", bytes}, {"days", ImageCache::get().days()}}));
+        });
+        route("/api/webui/image-cache/clear", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
+            const int days = ImageCache::get().days();
+            ImageCache::get().setDays(0);
+            const int removed = ImageCache::get().prune();
+            ImageCache::get().setDays(days);
+            cb(jsonResponse(200, json{{"removed", removed}}));
+        });
+
+        // 在线聊天
+        route("/api/webui/chat/conversations", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            panel::chatConversations(*state().hub, params(req), respond(std::move(cb)));
+        });
+        route("/api/webui/chat/messages", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            panel::chatMessages(*state().hub, params(req), respond(std::move(cb)));
+        });
+        route("/api/webui/chat/send", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            panel::chatSend(*state().hub, body, respond(std::move(cb)));
+        });
+
+        // 自定义回复
+        route("/api/webui/replies", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
+            cb(jsonResponse(200, panel::replyList(*state().hub)));
+        });
+        route("/api/webui/replies", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            panel::replySave(*state().hub, "", body, respond(std::move(cb)));
+        });
+        route("/api/webui/replies/{id}", drogon::Put, true, [](const drogon::HttpRequestPtr& req, const json& body, Callback&& cb) {
+            panel::replySave(*state().hub, param(req), body, respond(std::move(cb)));
+        });
+        route("/api/webui/replies/{id}", drogon::Delete, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            auto service = state().hub->replies();
+            try { if (service) service->remove(param(req)); cb(jsonResponse(200, json{{"ok", true}})); }
+            catch (const std::exception& e) { cb(jsonResponse(400, json{{"error", e.what()}})); }
+        });
+        route("/api/webui/replies/{id}/reset", drogon::Post, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            auto service = state().hub->replies();
+            try { cb(jsonResponse(200, service ? json(service->reset(param(req))) : json())); }
+            catch (const std::exception& e) { cb(jsonResponse(400, json{{"error", e.what()}})); }
+        });
+        route("/api/webui/replies-test", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            panel::replyTest(*state().hub, body, respond(std::move(cb)));
+        });
+
+        // 官方图床
+        route("/api/webui/materials", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            panel::materialList(*state().hub, params(req), respond(std::move(cb)));
+        });
+        route("/api/webui/materials", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            panel::materialUpload(*state().hub, body, respond(std::move(cb)));
+        });
+        route("/api/webui/materials/{id}", drogon::Delete, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            panel::materialDelete(*state().hub, req->getParameter("bot"), param(req), respond(std::move(cb)));
+        });
+
+        // 服务器性能
+        route("/api/webui/sysinfo", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            cb(jsonResponse(200, panel::sysinfoJson(panel::intParam(params(req), "since", 0))));
         });
     }
 
@@ -208,6 +279,17 @@ private:
     static State& state() { static State s; return s; }
 
     using Handler = std::function<void(const drogon::HttpRequestPtr&, const json&, Callback&&)>;
+
+    static panel::Params params(const drogon::HttpRequestPtr& req) {
+        return [req](const std::string& name) { return req->getParameter(name); };
+    }
+    /// 把 panel 的结果写回请求。回调可能在别的线程触发，统一交回事件循环。
+    static panel::Respond respond(Callback&& cb) {
+        auto shared = std::make_shared<Callback>(std::move(cb));
+        return [shared](int status, json body) {
+            drogon::app().getLoop()->queueInLoop([shared, status, body = std::move(body)] { (*shared)(jsonResponse(status, body)); });
+        };
+    }
 
     static std::string param(const drogon::HttpRequestPtr& req) {
         const auto& path = req->path();
@@ -375,7 +457,7 @@ private:
         const bool restart = parsed.webuiEnabled != s.webuiEnabled || parsed.webuiHost != s.webuiHost || parsed.webuiPort != s.webuiPort
             || parsed.webuiRoot != s.webuiRoot || parsed.webhookStandalone != s.webhookStandalone || parsed.webhookPath != s.webhookPath
             || (parsed.webhookStandalone && (parsed.webhookHost != s.webhookHost || parsed.webhookPort != s.webhookPort))
-            || parsed.dataDir != s.dataDir;
+            ;
         state().pendingRestart = restart;
         extra["ok"] = true;
         extra["restart_required"] = restart;
@@ -494,8 +576,8 @@ private:
             {"webhook", config.value("webhook", json::object())}, {"smtp", smtp}, {"smtp_password_set", passwordSet},
             {"bind", config.value("bind", json::object())}, {"webui", webui},
             {"masters", config.value("masters", json::array())}, {"notify_masters", config.value("notify_masters", true)},
-            {"data_dir", config.value("data_dir", std::string("data"))}, {"log_level", config.value("log_level", std::string("info"))},
-            {"message_retention_days", config.value("message_retention_days", 7)}});
+            {"log_level", config.value("log_level", std::string("info"))},
+            {"message_retention_days", config.value("message_retention_days", 365)}, {"image_cache_days", config.value("image_cache_days", 7)}});
     }
 
     static drogon::HttpResponsePtr writeSettings(const json& body) {
@@ -516,7 +598,13 @@ private:
             if (newPassword.size() < 6) return jsonResponse(400, json{{"error", "面板密码至少 6 位"}});
             config["webui"]["password"] = newPassword;
         }
-        for (const char* key : {"data_dir", "log_level", "message_retention_days", "masters", "notify_masters"}) if (body.contains(key)) config[key] = body[key];
+        if (body.contains("masters") && body["masters"].is_array())
+            for (const auto& m : body["masters"])
+                if (m.is_object() && m.value("bot_id", std::string()).empty() && !m.value("openid", std::string()).empty())
+                    return jsonResponse(400, json{{"error", "每个主人都要指定官方机器人：同一个用户在不同官方机器人下的 OpenID 不同"}});
+        config.erase("data_dir");
+        if (config.contains("bind") && config["bind"].is_object()) config["bind"].erase("email_domain");
+        for (const char* key : {"log_level", "message_retention_days", "image_cache_days", "masters", "notify_masters"}) if (body.contains(key)) config[key] = body[key];
         return commit(config);
     }
 
@@ -546,30 +634,6 @@ private:
     static json identityJson(const Store::Identity& i) {
         return json{{"type", kindName(i.kind)}, {"openid", i.openId}, {"number", i.number}, {"bound", i.bound},
                     {"direct", i.direct}, {"name", i.name}};
-    }
-
-    static json messages(int limit, int64_t offset) {
-        const auto store = state().hub->store();
-        json list = json::array();
-        for (const auto& m : store->recentAll(limit, offset)) {
-            const bool direct = m.scene == static_cast<int>(event::Scene::direct);
-            const auto segments = onebot::withoutInlineData(m.message);
-            // 能直接预览的图片单独给出，文字里就不再放「[图片]」。
-            json textual = json::array();
-            for (const auto& seg : segments)
-                if (!(seg.is_object() && seg.value("type", std::string()) == "image" && !onebot::imageUrls(json::array({seg})).empty())) textual.push_back(seg);
-            json item{{"id", m.id}, {"time", m.time}, {"self", m.self}, {"scene", direct ? "private" : "group"},
-                      {"content", onebot::toCq(segments)}, {"text", onebot::plainText(textual)}, {"images", onebot::imageUrls(segments)}};
-            const auto kind = direct ? Kind::user : Kind::group;
-            item["peer"] = store->number(kind, m.peer);
-            item["peer_name"] = store->name(kind, m.peer);
-            if (!m.self && !m.sender.empty()) {
-                item["sender"] = store->number(Kind::user, m.sender);
-                item["sender_name"] = store->name(Kind::user, m.sender);
-            }
-            list.push_back(item);
-        }
-        return list;
     }
 };
 

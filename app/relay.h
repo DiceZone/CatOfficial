@@ -44,6 +44,8 @@ public:
         /// 返回 true 表示消息已被处理（如 .bind 指令），不再推给 OneBot 应用。
         std::function<bool(Relay& relay, const event::MessageEvent& e)> intercept;
         std::function<void(bool online, const std::string& reason)> state;
+        /// 收发消息里的图片地址（图片缓存用）。
+        std::function<void(const std::vector<std::string>& urls)> images;
     };
 
     Relay(BotConfig config, std::shared_ptr<Store> store, Logger log, Hooks hooks = {})
@@ -118,6 +120,18 @@ public:
         });
     }
 
+    /// 管理面板「在线聊天」发消息：peerOpenId 是会话（用户 OpenID、group_openid 或 channel:…）。
+    void sendToPeer(Scene scene, const std::string& peerOpenId, const json& segments, Done done) {
+        Peer p{scene, scene == Scene::channel && peerOpenId.rfind("channel:", 0) == 0 ? peerOpenId.substr(8) : peerOpenId};
+        deliver(p, segments, std::string(), std::move(done), scene == Scene::direct ? "私聊 " + nickname(peerOpenId) : "群 " + store_->name(Kind::group, peerOpenId));
+    }
+
+    /// 被动回复一条收到的消息，消息段可含 markdown（自定义回复用）。
+    void replySegments(const event::MessageEvent& e, const json& segments, Done done) {
+        Peer p{e.scene, e.targetId};
+        deliver(p, segments, e.id == e.eventId ? std::string() : e.id, std::move(done), e.scene == Scene::direct ? "私聊 " + nickname(e.senderId) : "群 " + e.targetId);
+    }
+
     /// 被动回复一条收到的消息（.bind 等内部指令用）。
     void replyText(const event::MessageEvent& e, const std::string& text) {
         const auto scene = e.scene;
@@ -151,6 +165,7 @@ public:
     std::string userAvatar(int64_t number, int size = 640) {
         const auto openId = store_->openId(Kind::user, number);
         if (openId.empty() || openId.rfind("bot:", 0) == 0) return {};
+        if (auto given = store_->avatar(openId); !given.empty()) return given;
         return "https://q.qlogo.cn/qqapp/" + config_.appId + "/" + openId + "/" + std::to_string(size);
     }
 
@@ -257,6 +272,7 @@ private:
             m.refIdx = e.quotedIndex;
             m.scene = static_cast<int>(e.scene);
             m.peer = peer;
+            m.bot = config_.id;
             m.time = e.time;
             m.message = json::array();
             if (!quotedText.empty()) m.message.push_back(onebot::text(quotedText));
@@ -274,10 +290,10 @@ private:
         const bool group = e.scene == Scene::group || channel;
         const std::string peerOpenId = channel ? "channel:" + e.targetId : e.targetId;
         const auto userId = store_->number(Kind::user, e.senderId);
-        const auto username = protocol::text(e.author, "username");
-        store_->rememberName(Kind::user, e.senderId, username);
+        store_->rememberName(Kind::user, e.senderId, e.username);
+        store_->rememberAvatar(e.senderId, e.avatar);
         if (group) {
-            store_->rememberMember(peerOpenId, e.senderId, e.role);
+            store_->rememberMember(peerOpenId, e.senderId, e.role, e.memberNickname);
             if (!e.groupName.empty()) store_->rememberName(Kind::group, peerOpenId, e.groupName);
         } else {
             store_->markDirect(e.senderId);
@@ -295,9 +311,11 @@ private:
         record.scene = static_cast<int>(channel ? Scene::channel : e.scene);
         record.peer = peerOpenId;
         record.sender = e.senderId;
+        record.bot = config_.id;
         record.time = e.time;
         record.message = segments;
         const auto messageId = store_->rememberMessage(record);
+        if (hooks_.images) if (auto urls = onebot::imageUrls(segments); !urls.empty()) hooks_.images(urls);
         if (hooks_.intercept && hooks_.intercept(*this, e)) return;
         const auto raw = onebot::toCq(segments);
         json sender{{"user_id", userId}, {"nickname", nickname(e.senderId)}, {"sex", "unknown"}, {"age", 0}};
@@ -308,7 +326,7 @@ private:
                    {"raw_message", raw}, {"font", 0}};
         if (group) {
             const auto groupId = store_->number(Kind::group, peerOpenId);
-            sender["card"] = ""; sender["role"] = e.role.empty() ? "member" : e.role; sender["title"] = "";
+            sender["card"] = e.memberNickname; sender["role"] = e.role.empty() ? "member" : e.role; sender["title"] = "";
             event["message_type"] = "group"; event["sub_type"] = "normal";
             event["group_id"] = groupId; event["anonymous"] = nullptr;
             say(LogLevel::info, "收 群 " + std::to_string(groupId) + " " + nickname(e.senderId) + "(" + std::to_string(userId) + ")：" + onebot::plainText(segments));
@@ -418,12 +436,19 @@ private:
         const auto p = peer(kind, idValue);
         if (!p) { done(failed(1400, kind == Kind::group ? "未知的 group_id（机器人还没在这个群收到过消息）" : "未知的 user_id（机器人还没收到过这个用户的消息）")); return; }
         auto segments = onebot::normalize(params.value("message", json()), params.value("auto_escape", false));
+        deliver(*p, segments, std::string(), std::move(done), (p->scene == Scene::direct ? "私聊 " : "群 ") + onebot::dataText(idValue));
+    }
+
+    /// replyTo 非空时被动回复那条消息。
+    void deliver(const Peer& peerTarget, const json& segments, const std::string& replyTo, Done done, const std::string& where) {
+        const auto* p = &peerTarget;
         auto job = std::make_shared<SendJob>();
         job->target = Bot::Target{p->scene, p->id};
         job->peerOpenId = p->scene == Scene::channel ? "channel:" + p->id : p->id;
         job->plan = onebot::plan(segments, p->scene != Scene::direct, outResolver());
         job->segments = segments;
         job->done = std::move(done);
+        job->replyTo = replyTo;
         resolveReply(*job);
         if (!job->plan.skipped.empty()) {
             std::string list;
@@ -433,7 +458,6 @@ private:
         if (job->plan.empty()) { job->done(failed(1400, "消息为空，或只包含官方不支持的消息段")); return; }
         job->mix = job->plan.markdown.is_null() && job->plan.media.size() == 1
             && job->plan.media[0].fileType == media::kImage && !job->plan.text.empty();
-        const auto where = (p->scene == Scene::direct ? "私聊 " : "群 ") + onebot::dataText(idValue);
         say(LogLevel::info, "发 " + where + "：" + onebot::plainText(segments));
         if (!job->mix && (!job->plan.text.empty() || !job->plan.markdown.is_null())) {
             json body;
@@ -459,6 +483,7 @@ private:
         const auto m = store_->messageById(job.plan.replyId);
         if (!m) return;
         if (!m->refIdx.empty()) job.reference = json{{"message_id", m->refIdx}};
+        if (!job.replyTo.empty()) return;   // 调用方已指定要被动回复的消息
         const bool direct = job.target.scene == Scene::direct;
         const auto window = direct ? Bot::kDirectReplyWindow : Bot::kGroupReplyWindow;
         if (!m->self && !m->officialId.empty() && m->peer == job.peerOpenId && std::time(nullptr) - m->time < window)
@@ -474,10 +499,12 @@ private:
         m.refIdx = protocol::text(protocol::object(data, "ext_info"), "ref_idx");
         m.scene = static_cast<int>(job.target.scene);
         m.peer = job.peerOpenId;
+        m.bot = config_.id;
         m.time = std::time(nullptr);
         m.self = true;
         m.message = onebot::withoutInlineData(job.segments);
         const auto id = store_->rememberMessage(m);
+        if (hooks_.images) if (auto urls = onebot::imageUrls(m.message); !urls.empty()) hooks_.images(urls);
         if (!job.firstId) job.firstId = id;
         // 机器人自己发出的消息，供开启了「上报自身消息」的连接使用。
         const bool group = job.target.scene != Scene::direct;
