@@ -102,7 +102,7 @@ export function SettingsPage() {
     setRestarting(true);
     try {
       await api.restart();
-      if (await waitUntilBack(Number(webui.port) || 6099)) { toast.success(t('settings.restart_done')); setNeedRestart(false); }
+      if (await waitUntilBack(Number(webui.port) || 18082)) { toast.success(t('settings.restart_done')); setNeedRestart(false); }
     } catch (e) {
       toast.error(t('common.failed', { error: e instanceof Error ? e.message : String(e) }));
     } finally {
@@ -216,7 +216,7 @@ export function SettingsPage() {
         <CardHeader><CardTitle>{t('settings.webui')}</CardTitle></CardHeader>
         <CardContent className="grid gap-5 md:grid-cols-3">
           <Field label={t('settings.host')}><Input value={webui.host ?? '127.0.0.1'} onChange={(e) => patch('webui', 'host', e.target.value.trim())} /></Field>
-          <Field label={t('settings.port')}><Input inputMode="numeric" value={webui.port ?? 6099} onChange={(e) => patch('webui', 'port', num(e.target.value))} /></Field>
+          <Field label={t('settings.port')}><Input inputMode="numeric" value={webui.port ?? 18082} onChange={(e) => patch('webui', 'port', num(e.target.value))} /></Field>
           <Field label={t('settings.new_password')} hint={t('settings.new_password_hint')} id="new-password">
             <Input id="new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
           </Field>

@@ -54,7 +54,7 @@ struct Config {
     // 管理面板
     bool webuiEnabled = true;
     std::string webuiHost = "127.0.0.1";
-    uint16_t webuiPort = 6099;
+    uint16_t webuiPort = 18082;
     std::string webuiPassword;          // 为空时首次启动自动生成并写回配置文件
     std::string webuiRoot = "web";      // 前端文件目录，相对配置文件所在目录
 };
@@ -86,7 +86,7 @@ inline const char* kConfigTemplate = R"({
   "webui": {
     "enabled": true,
     "host": "127.0.0.1",
-    "port": 6099,
+    "port": 18082,
     "password": "",
     "root": "web"
   },
