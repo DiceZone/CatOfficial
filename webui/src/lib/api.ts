@@ -128,8 +128,16 @@ export interface MessageFilters {
 
 export interface Conversation {
   peer: string; bot: string; scene: 'private' | 'group'; number: number; name: string; time: number; count: number;
-  avatar?: string; last: MessageRow;
+  avatar?: string; member_count?: number; last: MessageRow;
 }
+
+export interface ChatMember { openid: string; number: number; name: string; card: string; role: string; avatar: string; last_seen: number }
+export interface ChatPeer {
+  scene: 'group' | 'private'; openid: string; number: number; name: string; avatar?: string; bound_number?: number;
+  member_count?: number; memo?: string; bot_role?: string;
+  members?: ChatMember[]; members_source?: 'official' | 'seen'; members_error?: string;
+}
+export type ChatManageAction = 'mute' | 'mute_list' | 'kick' | 'blacklist' | 'blacklist_add' | 'blacklist_del' | 'join_requests' | 'join_approve' | 'join_decline';
 
 export type MatchType = 'keyword' | 'search' | 'prefix' | 'regex';
 export interface ReplyRule {
@@ -207,6 +215,10 @@ export const api = {
   conversations: (bot = '') => request<Conversation[]>('GET', `chat/conversations?bot=${encodeURIComponent(bot)}`),
   chatMessages: (peer: string, opts: { before?: number; after?: number; limit?: number } = {}) =>
     request<MessageRow[]>('GET', `chat/messages?peer=${encodeURIComponent(peer)}&before=${opts.before ?? 0}&after=${opts.after ?? 0}&limit=${opts.limit ?? 50}`),
+  chatPeer: (bot: string, peer: string, scene: string) =>
+    request<ChatPeer>('GET', `chat/peer?bot=${encodeURIComponent(bot)}&peer=${encodeURIComponent(peer)}&scene=${scene}`),
+  chatManage: (body: { bot: string; peer: string; action: ChatManageAction; member?: string; seconds?: number; blacklist?: boolean; request_id?: string; reason?: string; cursor?: string }) =>
+    request<{ ok: boolean; data: Record<string, unknown> }>('POST', 'chat/manage', body),
   chatSend: (body: { bot: string; peer: string; scene: string; text?: string; markdown?: string; image?: { name: string; base64: string }; reply_to?: number }) =>
     request<{ ok: boolean; message_id: number }>('POST', 'chat/send', body),
 

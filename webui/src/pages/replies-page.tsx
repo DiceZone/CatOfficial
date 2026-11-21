@@ -3,22 +3,21 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { FlaskConical, MessageSquareReply, MoreHorizontal, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { FlaskConical, Plus, Search, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { PageHeader } from '@/components/page-header';
 import { useConfirm } from '@/components/confirm-dialog';
 import { FeatureHelp } from '@/components/ui/feature-help';
-import { Choice, EmptyState, Field, digits, errorText } from '@/components/form';
+import { Choice, Field, digits, errorText } from '@/components/form';
+import { ReplyTable } from '@/components/reply-table';
 import { MarkdownToolbar, useMarkdownEditing } from '@/components/markdown/markdown-toolbar';
 import { MarkdownView } from '@/components/markdown/markdown-view';
 import { api, botLabel, type MatchType, type ReplyRule, type ReplyVariable } from '@/lib/api';
@@ -253,73 +252,62 @@ export function RepliesPage() {
   const { t } = useTranslation();
   const client = useQueryClient();
   const query = useQuery({ queryKey: ['replies'], queryFn: api.replies });
-  const bots = useQuery({ queryKey: ['bots'], queryFn: api.bots });
   const [editing, setEditing] = React.useState<ReplyRule | null>(null);
   const [formOpen, setFormOpen] = React.useState(false);
+  const [filterText, setFilterText] = React.useState('');
+  const [matchType, setMatchType] = React.useState<'all' | MatchType>('all');
+  const [status, setStatus] = React.useState<'all' | 'enabled' | 'disabled'>('all');
   const { confirm, node } = useConfirm();
-  const rules = [...(query.data?.rules ?? [])].sort((a, b) => b.priority - a.priority);
   const refresh = () => void client.invalidateQueries({ queryKey: ['replies'] });
-  const botName = (id: string) => { const b = bots.data?.find((x) => x.id === id); return b ? botLabel(b) : id; };
-
   const act = async (job: () => Promise<unknown>, done?: string) => {
     try { await job(); if (done) toast.success(done); refresh(); } catch (e) { toast.error(t('common.failed', { error: errorText(e) })); }
   };
   const open = (rule: ReplyRule | null) => { setEditing(rule); setFormOpen(true); };
+  const title = (r: ReplyRule) => r.name || r.conditions[0]?.content || r.id;
 
   return (
     <>
-      <PageHeader title={t('replies.title')} description={t('replies.description')}
-        actions={<Button size="sm" onClick={() => open(null)}><Plus className="mr-2 h-4 w-4" />{t('replies.add')}</Button>} />
-      <TryIt />
-      {!query.isLoading && rules.length === 0
-        ? <EmptyState icon={MessageSquareReply} title={t('replies.empty')} hint={t('replies.empty_hint')} />
-        : (
-          <div className="space-y-3">
-            {rules.map((r) => (
-              <Card key={r.id} className={cn(!r.enabled && 'opacity-60')}>
-                <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start">
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{r.name || r.conditions.map((c) => c.content).join(' / ')}</span>
-                      {r.builtin && <Badge variant="info">{t('replies.builtin')}</Badge>}
-                      {r.format === 'markdown' && <Badge variant="neutral">Markdown</Badge>}
-                      {r.scope !== 'all' && <Badge variant="neutral">{t(r.scope === 'group' ? 'replies.scope_group' : 'replies.scope_private')}</Badge>}
-                      {r.cooldown_sec > 0 && <Badge variant="neutral">{t('replies.cd_badge', { n: r.cooldown_sec })}</Badge>}
-                      {r.prob < 100 && <Badge variant="neutral">{r.prob}%</Badge>}
-                      {r.pass_through && <Badge variant="warning">{t('replies.pass_through_badge')}</Badge>}
-                      <span className="text-xs text-muted-foreground">{t('replies.priority')} {r.priority}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {r.conditions.map((c, i) => (
-                        <span key={i} className="rounded border bg-muted/40 px-1.5 py-0.5 text-xs">
-                          <span className="text-muted-foreground">{t(`replies.mt_${c.type}`)}</span> <span className="font-mono">{c.content}</span>
-                        </span>
-                      ))}
-                      {r.conditions.length > 1 && <span className="text-xs text-muted-foreground">{t(`replies.logic_${r.logic}`)}</span>}
-                    </div>
-                    <p className="line-clamp-3 whitespace-pre-wrap break-all text-sm text-muted-foreground">{r.results[0]}{r.results.length > 1 && ` ${t('replies.more_results', { n: r.results.length - 1 })}`}</p>
-                    {r.bots.length > 0 && <p className="text-xs text-muted-foreground">{t('replies.only_bots', { names: r.bots.map(botName).join('、') })}</p>}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Switch checked={r.enabled} aria-label={t('common.enabled')} onCheckedChange={(v) => void act(() => api.saveReply({ ...r, enabled: v }))} />
-                    <Button variant="ghost" size="icon" aria-label={t('common.edit')} onClick={() => open(r)}><Pencil className="h-4 w-4" /></Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={t('common.more')}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {r.builtin
-                          ? <DropdownMenuItem onClick={() => void confirm({ title: t('replies.reset'), description: t('replies.reset_confirm') }).then((ok) => { if (ok) void act(() => api.resetReply(r.id), t('replies.reset_done')); })}>
-                              <RotateCcw className="mr-2 h-4 w-4" />{t('replies.reset')}</DropdownMenuItem>
-                          : <DropdownMenuItem className="text-destructive" onClick={() => void confirm({ title: t('common.delete'), description: t('replies.delete_confirm'), confirmLabel: t('common.delete'), destructive: true }).then((ok) => { if (ok) void act(() => api.deleteReply(r.id), t('replies.deleted')); })}>
-                              <Trash2 className="mr-2 h-4 w-4" />{t('common.delete')}</DropdownMenuItem>}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
       {node}
+      <PageHeader title={t('replies.title')} description={t('replies.description')}
+        actions={<Button size="sm" disabled={query.isLoading} onClick={() => open(null)}><Plus className="mr-2 h-4 w-4" />{t('replies.add')}</Button>} />
+      <div className="grid items-start gap-6 2xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 space-y-4">
+          <div className="grid grid-cols-2 items-center gap-2 md:flex md:flex-wrap">
+            <div className="relative col-span-2 min-w-0 md:flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input placeholder={t('replies.search_placeholder')} aria-label={t('replies.search_placeholder')} value={filterText} onChange={(e) => setFilterText(e.target.value)} className="pl-9" />
+            </div>
+            <Select value={matchType} onValueChange={(v) => setMatchType(v as 'all' | MatchType)}>
+              <SelectTrigger className="w-full md:w-[150px]" aria-label={t('replies.filter_match_type')}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t('replies.filter_type_all')}</SelectItem>
+                {(['keyword', 'prefix', 'search', 'regex'] as const).map((m) => <SelectItem key={m} value={m}>{t(`replies.mt_${m}`)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={status} onValueChange={(v) => setStatus(v as 'all' | 'enabled' | 'disabled')}>
+              <SelectTrigger className="w-full md:w-[130px]" aria-label={t('replies.filter_status')}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t('replies.filter_status_all')}</SelectItem>
+                <SelectItem value="enabled">{t('replies.filter_enabled')}</SelectItem>
+                <SelectItem value="disabled">{t('replies.filter_disabled')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {query.isError
+            ? <div role="alert" className="space-y-2 rounded-lg border border-destructive/40 p-4">
+                <p className="text-sm text-destructive">{t('common.load_failed')}</p>
+                <Button variant="outline" onClick={() => void query.refetch()}>{t('common.retry')}</Button>
+              </div>
+            : query.isLoading ? <div className="h-64 animate-pulse rounded-lg bg-muted" />
+            : <ReplyTable rules={query.data?.rules ?? []} filterText={filterText} matchTypeFilter={matchType} statusFilter={status}
+                onEdit={open}
+                onToggle={(r, v) => void act(() => api.saveReply({ ...r, enabled: v }))}
+                onReset={(r) => void confirm({ title: t('replies.reset'), description: t('replies.reset_confirm') }).then((ok) => { if (ok) void act(() => api.resetReply(r.id), t('replies.reset_done')); })}
+                onDelete={(r) => void confirm({ title: t('common.delete'), description: `${title(r)} · ${t('replies.delete_confirm')}`, confirmLabel: t('common.delete'), destructive: true })
+                  .then((ok) => { if (ok) void act(() => api.deleteReply(r.id), t('replies.deleted')); })} />}
+        </div>
+        <div className="min-w-0 2xl:sticky 2xl:top-0"><TryIt /></div>
+      </div>
       <ReplyForm open={formOpen} onOpenChange={setFormOpen} rule={editing} variables={query.data?.variables ?? []} onSaved={refresh} />
     </>
   );

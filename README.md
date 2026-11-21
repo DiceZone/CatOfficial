@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.svg" alt="CatOfficial" width="128" /></p>
+
 # CatOfficial
 
 CatOfficial 把 QQ 官方机器人转接为标准 OneBot V11，让原本面向 OneBot 的应用不改代码即可接入官方机器人。
