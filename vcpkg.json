@@ -1,0 +1,13 @@
+{
+  "name": "catofficial",
+  "version-string": "0.1.0",
+  "description": "Relay the QQ official bot as a standard OneBot V11 implementation.",
+  "license": "AGPL-3.0-only",
+  "builtin-baseline": "44819aa2a6c10e56065e2b0330e7d6c89d1d2574",
+  "dependencies": [
+    "drogon",
+    "nlohmann-json",
+    "openssl",
+    "sqlite3"
+  ]
+}
