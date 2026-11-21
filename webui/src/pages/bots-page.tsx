@@ -70,7 +70,7 @@ function BotCard({ bot, onEdit, onDelete, onToggle, onQr }: {
           <dd className="text-right">{t(official ? 'bots.type_official' : 'bots.type_onebot')}</dd>
           {official ? <>
             <dt className="text-muted-foreground">{t('bots.app_id_label')}</dt><dd className="truncate text-right font-mono">{bot.app_id || '—'}</dd>
-            <dt className="text-muted-foreground">{t('bots.mode')}</dt><dd className="text-right">{t(bot.mode === 'webhook' ? 'bots.mode_webhook' : 'bots.mode_gateway')}</dd>
+            <dt className="text-muted-foreground">{t('bots.mode')}</dt><dd className="text-right">{t(bot.mode === 'webhook' ? 'bots.mode_webhook' : 'bots.mode_websocket')}</dd>
           </> : <>
             <dt className="text-muted-foreground">{t('bots.address')}</dt><dd className="truncate text-right font-mono" title={bot.url}>{bot.url || '—'}</dd>
           </>}
@@ -116,8 +116,8 @@ function BotForm({ draft, onChange, onQr }: { draft: Partial<Bot>; onChange: (b:
         </Field>
       </div>
       <Field label={t('bots.mode')} hint={draft.mode === 'webhook' ? t('bots.webhook_hint') : undefined}>
-        <Choice value={draft.mode ?? 'gateway'} onChange={(v) => set({ mode: v as Bot['mode'] })}
-          options={[{ value: 'gateway', label: t('bots.mode_gateway') }, { value: 'webhook', label: t('bots.mode_webhook') }]} />
+        <Choice value={draft.mode === 'webhook' ? 'webhook' : 'websocket'} onChange={(v) => set({ mode: v as Bot['mode'] })}
+          options={[{ value: 'websocket', label: t('bots.mode_websocket') }, { value: 'webhook', label: t('bots.mode_webhook') }]} />
       </Field>
       <Toggle label={t('bots.subscribe')} hint={t('bots.subscribe_hint')} checked={!!draft.subscribe_group_member_events}
         onChange={(v) => set({ subscribe_group_member_events: v })} />
@@ -204,7 +204,7 @@ export function BotsPage() {
   });
 
   const newBot = (type: Bot['type']) => setDraft(type === 'official'
-    ? { type, enabled: true, name: '', mode: 'gateway', auto_ack_interactions: true, subscribe_group_member_events: false }
+    ? { type, enabled: true, name: '', mode: 'websocket', auto_ack_interactions: true, subscribe_group_member_events: false }
     : { type, enabled: true, name: '', url: 'ws://127.0.0.1:3001' });
   const editable = (b: Bot): Partial<Bot> => { const { runtime: _r, ...rest } = b; return { ...rest, app_secret: '', token: '' }; };
 

@@ -38,7 +38,7 @@ export interface Bot {
   app_id?: string;
   app_secret?: string;
   app_secret_set?: boolean;
-  mode?: 'gateway' | 'webhook';
+  mode?: 'websocket' | 'webhook';
   subscribe_group_member_events?: boolean;
   auto_ack_interactions?: boolean;
   url?: string;

@@ -15,6 +15,10 @@
         "non-http",
         "ssl"
       ]
+    },
+    {
+      "name": "ixwebsocket",
+      "default-features": false
     }
   ]
 }

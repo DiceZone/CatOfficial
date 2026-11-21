@@ -12,6 +12,7 @@
 
 #include <curl/curl.h>
 #include <drogon/drogon.h>
+#include <ixwebsocket/IXNetSystem.h>
 
 #include <chrono>
 #include <ctime>
@@ -40,17 +41,10 @@ int levelRank(catofficial::LogLevel level) {
     }
 }
 
-int configRank(const std::string& name) {
-    if (name == "debug") return 0;
-    if (name == "warn") return 2;
-    if (name == "error") return 3;
-    return 1;
-}
-
-catofficial::Logger makeLogger(int minimum) {
+catofficial::Logger makeLogger() {
     auto mu = std::make_shared<std::mutex>();
-    return [mu, minimum](catofficial::LogLevel level, const std::string& message) {
-        if (levelRank(level) < minimum) return;
+    return [mu](catofficial::LogLevel level, const std::string& message) {
+        if (levelRank(level) < catofficial::app::LogBuffer::get().minimum()) return;
         catofficial::app::LogBuffer::get().push(level, message);
         const auto now = std::chrono::system_clock::now();
         const std::time_t t = std::chrono::system_clock::to_time_t(now);
@@ -102,6 +96,7 @@ int main(int argc, char** argv) {
     if (const char* restarted = std::getenv("CATOFFICIAL_RESTARTED"); restarted && std::string(restarted) == "1")
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     curl_global_init(CURL_GLOBAL_DEFAULT);
+    ix::initNetSystem();
     std::error_code ec;
     const fs::path configPath = fs::absolute(fromUtf8(argc > 1 ? argv[1] : "config.json"), ec);
     if (!fs::exists(configPath)) {
@@ -118,7 +113,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const auto log = makeLogger(configRank(config.logLevel));
+    LogBuffer::get().setMinimum(config.logLevel);
+    const auto log = makeLogger();
+    LogBuffer::get().setLogger(log);
     const bool newPassword = WebUi::ensurePassword(configPath, config);
     fs::path dataDir = fromUtf8(config.dataDir);
     if (dataDir.is_relative()) dataDir = configPath.parent_path() / dataDir;
@@ -143,11 +140,6 @@ int main(int argc, char** argv) {
     for (const auto& b : config.bots) if (b.enabled) (b.official() ? officials : legacies)++;
     log(catofficial::LogLevel::info, "官方机器人 " + std::to_string(officials) + " 个，原 QQ 机器人 " + std::to_string(legacies) + " 个");
     if (!officials) log(catofficial::LogLevel::warn, "还没有启用的官方机器人，请在管理面板的「登录管理」里添加");
-    for (const auto& c : config.connections) {
-        if (!c.enabled) continue;
-        const auto where = c.server() ? c.host + ":" + std::to_string(c.port) : c.url;
-        log(catofficial::LogLevel::info, "OneBot 连接「" + c.name + "」（" + c.type + "）：" + where);
-    }
     if (config.webhookPort)
         log(catofficial::LogLevel::info, "官方 Webhook 入口：" + config.webhookHost + ":" + std::to_string(config.webhookPort) + config.webhookPath);
     if (config.webuiEnabled) {

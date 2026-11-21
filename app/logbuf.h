@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <ctime>
 #include <deque>
@@ -19,6 +20,18 @@ public:
     static constexpr std::size_t kCapacity = 3000;
 
     static LogBuffer& get() { static LogBuffer b; return b; }
+
+    /// 全局日志入口（主程序设置），没有持有 Logger 的模块可以经这里写日志。
+    void setLogger(Logger logger) { std::lock_guard lock(mu_); logger_ = std::move(logger); }
+    void log(LogLevel level, const std::string& message) {
+        Logger logger;
+        { std::lock_guard lock(mu_); logger = logger_; }
+        if (logger) logger(level, message);
+    }
+
+    /// 最低记录级别（可热更新）：0 debug，1 info，2 warn，3 error。
+    void setMinimum(const std::string& name) { minimum_ = name == "debug" ? 0 : name == "warn" ? 2 : name == "error" ? 3 : 1; }
+    int minimum() const { return minimum_.load(); }
 
     void push(LogLevel level, const std::string& message) {
         std::lock_guard lock(mu_);
@@ -54,6 +67,8 @@ public:
 private:
     struct Entry { uint64_t seq; std::time_t time; LogLevel level; std::string message; };
     std::mutex mu_;
+    Logger logger_;
+    std::atomic<int> minimum_{1};
     std::deque<Entry> entries_;
     uint64_t seq_ = 0;
 };

@@ -29,11 +29,12 @@ if(CATOFFICIAL_BUILD_APP OR CATOFFICIAL_BUILD_TESTS)
     find_package(OpenSSL REQUIRED)
     find_package(unofficial-sqlite3 CONFIG REQUIRED)
     find_package(CURL CONFIG REQUIRED)
+    find_package(ixwebsocket CONFIG REQUIRED)
 
     add_library(catofficial_app_deps INTERFACE)
     target_link_libraries(catofficial_app_deps INTERFACE
         catofficial::core Drogon::Drogon nlohmann_json::nlohmann_json
-        OpenSSL::SSL OpenSSL::Crypto unofficial::sqlite3::sqlite3 CURL::libcurl)
+        OpenSSL::SSL OpenSSL::Crypto unofficial::sqlite3::sqlite3 CURL::libcurl ixwebsocket::ixwebsocket)
 endif()
 
 if(CATOFFICIAL_BUILD_APP)

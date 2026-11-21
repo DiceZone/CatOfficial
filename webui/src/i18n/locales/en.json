@@ -22,7 +22,7 @@
     "menu": "Menu"
   },
   "restart": {
-    "pending": "Configuration changed. Restart to apply.",
+    "pending": "The panel address, webhook endpoint or data directory changed. Restart to apply.",
     "now": "Restart now",
     "running": "Restarting…",
     "done": "Restarted"
@@ -42,8 +42,8 @@
     "more": "More actions",
     "enabled": "Enabled",
     "failed": "Failed: {{error}}",
-    "saved": "Saved. Restart to apply.",
-    "deleted": "Deleted. Restart to apply."
+    "saved": "Saved and applied",
+    "deleted": "Deleted"
   },
   "login": {
     "title": "Sign in to the panel",
@@ -56,7 +56,7 @@
     "offline": "Offline",
     "connecting": "Connecting",
     "disabled": "Disabled",
-    "pending": "Applies after restart"
+    "pending": "Starting"
   },
   "dashboard": {
     "title": "Overview",
@@ -95,7 +95,6 @@
     "app_secret": "AppSecret",
     "app_secret_keep": "Already set. Leave empty to keep it.",
     "mode": "Event delivery",
-    "mode_gateway": "Gateway (outbound connection)",
     "mode_webhook": "Webhook (official callback)",
     "webhook_hint": "Webhook delivery needs the webhook port in Settings and the callback URL set on the developer platform.",
     "subscribe": "Subscribe to group member events",
@@ -121,7 +120,8 @@
     "sent": "Sent",
     "edit_title": "Edit bot",
     "add_title": "Add bot",
-    "delete_confirm": "Delete bot \"{{name}}\"? Connections that used it will serve the remaining bots."
+    "delete_confirm": "Delete bot \"{{name}}\"? Connections that used it will serve the remaining bots.",
+    "mode_websocket": "WebSocket (outbound connection)"
   },
   "connections": {
     "title": "Connections",
@@ -224,7 +224,7 @@
   },
   "settings": {
     "title": "Settings",
-    "description": "Changes are written to the configuration file and take effect after a restart.",
+    "description": "Changes are saved and applied immediately; the panel address, webhook endpoint and data directory need a restart.",
     "webhook": "Official webhook endpoint",
     "webhook_hint": "Only needed by official bots that receive events by webhook. The callback needs a public HTTPS address, usually behind a reverse proxy. Port 0 disables it.",
     "host": "Host",

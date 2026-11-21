@@ -23,7 +23,7 @@ struct BotConfig {
     std::string type = "official";    // official / onebot
     // official
     std::string appId, appSecret;
-    bool webhook = false;
+    bool webhook = false;              // false：WebSocket（官方文档称 Gateway）
     bool subscribeGroupMemberEvents = false;
     bool autoAckInteractions = true;
     // onebot（CatOfficial 以客户端身份连它的正向 WebSocket）
@@ -125,7 +125,7 @@ inline nlohmann::json migrateConfig(nlohmann::json j) {
     if (!bot.value("app_id", std::string()).empty())
         bots.push_back(json{{"id", "bot1"}, {"name", "官方机器人"}, {"enabled", true}, {"type", "official"},
             {"app_id", bot.value("app_id", std::string())}, {"app_secret", bot.value("app_secret", std::string())},
-            {"mode", bot.value("mode", std::string("gateway"))},
+            {"mode", bot.value("mode", std::string("websocket")) == "webhook" ? "webhook" : "websocket"},
             {"subscribe_group_member_events", bot.value("subscribe_group_member_events", false)},
             {"auto_ack_interactions", bot.value("auto_ack_interactions", true)}});
     const auto ob = j.value("onebot", json::object());
@@ -171,7 +171,7 @@ inline Config parseConfig(const nlohmann::json& input) {
         bot.type = b.value("type", std::string("official"));
         bot.appId = b.value("app_id", std::string());
         bot.appSecret = b.value("app_secret", std::string());
-        bot.webhook = b.value("mode", std::string("gateway")) == "webhook";
+        bot.webhook = b.value("mode", std::string("websocket")) == "webhook";   // websocket（旧值 gateway）/ webhook
         bot.subscribeGroupMemberEvents = b.value("subscribe_group_member_events", false);
         bot.autoAckInteractions = b.value("auto_ack_interactions", true);
         bot.url = b.value("url", std::string());

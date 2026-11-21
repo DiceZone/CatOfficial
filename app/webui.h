@@ -58,6 +58,7 @@ public:
 
     static void setup(std::filesystem::path configPath, std::filesystem::path dataDir, std::shared_ptr<Hub> hub) {
         auto& s = state();
+        s.startup = hub->config();
         s.configPath = std::move(configPath);
         s.sessionFile = dataDir / "webui-sessions.json";
         s.hub = std::move(hub);
@@ -202,6 +203,7 @@ private:
         std::map<std::string, std::time_t> sessions;                 // 令牌 → 到期时间
         std::map<std::string, std::deque<std::time_t>> failures;     // IP → 最近失败时间
         std::atomic<bool> pendingRestart{false};
+        Config startup;                                              // 启动时的配置，用来判断改动是否需要重启
         std::time_t startedAt = std::time(nullptr);
     };
     static State& state() { static State s; return s; }
@@ -354,14 +356,21 @@ private:
         return migrateConfig(raw.is_object() ? raw : json::object());
     }
 
-    /// 校验后写回配置文件并标记需要重启。
+    /// 校验后写回配置文件并立即应用。只有面板地址、Webhook 入口与数据目录要重启才生效。
     static drogon::HttpResponsePtr commit(const json& next, json extra = json::object()) {
-        try { (void)parseConfig(next); }
+        Config parsed;
+        try { parsed = parseConfig(next); }
         catch (const std::exception& e) { return jsonResponse(400, json{{"error", e.what()}}); }
         writeJson(state().configPath, next);
-        state().pendingRestart = true;
+        state().hub->apply(parsed);
+        Server::applyConnections(parsed.connections);
+        const auto& s = state().startup;
+        const bool restart = parsed.webuiEnabled != s.webuiEnabled || parsed.webuiHost != s.webuiHost || parsed.webuiPort != s.webuiPort
+            || parsed.webuiRoot != s.webuiRoot || parsed.webhookHost != s.webhookHost || parsed.webhookPort != s.webhookPort
+            || parsed.webhookPath != s.webhookPath || parsed.dataDir != s.dataDir;
+        state().pendingRestart = restart;
         extra["ok"] = true;
-        extra["restart_required"] = true;
+        extra["restart_required"] = restart;
         return jsonResponse(200, extra);
     }
 
@@ -434,9 +443,7 @@ private:
         for (auto conn : fileConfig().value("connections", json::array())) {
             const auto id = conn.value("id", std::string());
             auto runtime = ConnectionStats::get().snapshot(id);
-            bool listening = false;
-            for (const auto& [port, c] : Server::listeners()) if (c.id == id) listening = true;
-            runtime["listening"] = listening;
+            runtime["listening"] = Server::listening(id);
             conn["runtime"] = runtime;
             list.push_back(conn);
         }

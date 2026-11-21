@@ -3,10 +3,12 @@
 // 中枢：管理所有机器人（官方与原 QQ）、OneBot 连接上的事件分发、动作路由与通知。
 //   · 事件：官方机器人产生的 OneBot 事件，送到服务这个机器人的连接。
 //   · 动作：按 self_id（参数或请求头）找到机器人；没给时用连接服务的第一个机器人。
+//   · 配置变化时 apply()：增删改机器人、更新邮件与绑定设置，不需要重启。
 
 #include "bind.h"
 #include "config.h"
 #include "legacy.h"
+#include "logbuf.h"
 #include "mailer.h"
 #include "relay.h"
 #include "store.h"
@@ -21,9 +23,15 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace catofficial::app {
+
+inline bool sameBot(const BotConfig& a, const BotConfig& b) {
+    return std::tie(a.id, a.name, a.enabled, a.type, a.appId, a.appSecret, a.webhook, a.subscribeGroupMemberEvents, a.autoAckInteractions, a.url, a.token)
+        == std::tie(b.id, b.name, b.enabled, b.type, b.appId, b.appSecret, b.webhook, b.subscribeGroupMemberEvents, b.autoAckInteractions, b.url, b.token);
+}
 
 class Hub : public std::enable_shared_from_this<Hub> {
 public:
@@ -35,60 +43,43 @@ public:
 
     void init() {
         mailer_ = std::make_shared<Mailer>(config_.smtp, log_);
+        std::lock_guard lock(mu_);
         bind_ = std::make_shared<BindService>(config_.bind, store_, mailer_, log_);
-        std::weak_ptr<Hub> weak = weak_from_this();
-        bool legacy = false;
-        for (const auto& b : config_.bots) {
-            if (!b.enabled) continue;
-            if (b.official()) {
-                Relay::Hooks hooks;
-                const auto id = b.id;
-                hooks.emit = [weak, id](const json& event) { if (auto self = weak.lock()) self->emit(id, event); };
-                hooks.intercept = [weak](Relay& relay, const event::MessageEvent& e) {
-                    auto self = weak.lock(); if (!self) return false;
-                    std::weak_ptr<Relay> r = relay.weak_from_this();
-                    return self->bind_->onOfficial(e, [r, e](const std::string& text) { if (auto relay = r.lock()) relay->replyText(e, text); });
-                };
-                hooks.state = [weak, id, name = b.name](bool online, const std::string& reason) {
-                    auto self = weak.lock(); if (!self) return;
-                    if (!self->mailer_->config().notifyOffline) return;
-                    if (online) self->mailer_->notifyOwner("online:" + id, "官方机器人「" + name + "」已恢复在线", "官方机器人「" + name + "」已重新上线。", 0);
-                    else self->mailer_->notifyOwner("offline:" + id, "官方机器人「" + name + "」离线", "官方机器人「" + name + "」离线：" + reason + "\n\nCatOfficial 会自动重连；长时间未恢复请检查网络与机器人配置。");
-                };
-                auto relay = std::make_shared<Relay>(b, store_, log_, std::move(hooks));
-                relay->init();
-                relays_.push_back(relay);
-                if (b.webhook) webhooks_.bind(b.appId, b.id, relay);
-            } else {
-                legacy = true;
-                auto client = std::make_shared<LegacyClient>(b, [weak](const LegacyMessage& m) {
-                    if (auto self = weak.lock()) self->bind_->onLegacy(m);
-                }, log_);
-                legacies_[b.id] = client;
-            }
-        }
-        bind_->setLegacyAvailable(legacy);
     }
 
-    void start() {
-        for (auto& r : relays_) r->start();
-        for (auto& [id, l] : legacies_) l->start();
-    }
+    /// 按当前配置启动全部机器人（事件循环开始后调用）。
+    void start() { applyBots({}, config().bots); }
+
     void stop() {
-        for (auto& r : relays_) r->stop();
-        for (auto& [id, l] : legacies_) l->stop();
+        std::vector<std::shared_ptr<Relay>> relays;
+        std::map<std::string, std::shared_ptr<LegacyClient>> legacies;
+        { std::lock_guard lock(mu_); relays.swap(relays_); legacies.swap(legacies_); }
+        for (auto& r : relays) r->stop();
+        for (auto& [id, l] : legacies) l->stop();
     }
 
-    const Config& config() const { return config_; }
+    /// 应用新配置中可以热加载的部分：机器人、邮件、绑定指令、日志级别、消息保留天数。
+    void apply(const Config& next) {
+        const auto previous = config();
+        { std::lock_guard lock(mu_); config_ = next; }
+        mailer_->setConfig(next.smtp);
+        applyBots(previous.bots, next.bots);
+        LogBuffer::get().setMinimum(next.logLevel);
+    }
+
+    Config config() const { std::lock_guard lock(mu_); return config_; }
     std::shared_ptr<Store> store() const { return store_; }
     std::shared_ptr<Mailer> mailer() const { return mailer_; }
-    const std::vector<std::shared_ptr<Relay>>& relays() const { return relays_; }
+    std::shared_ptr<BindService> bind() const { std::lock_guard lock(mu_); return bind_; }
+    std::vector<std::shared_ptr<Relay>> relays() const { std::lock_guard lock(mu_); return relays_; }
 
     std::shared_ptr<Relay> relay(const std::string& botId) const {
+        std::lock_guard lock(mu_);
         for (const auto& r : relays_) if (r->id() == botId) return r;
         return nullptr;
     }
     std::shared_ptr<LegacyClient> legacy(const std::string& botId) const {
+        std::lock_guard lock(mu_);
         auto it = legacies_.find(botId);
         return it == legacies_.end() ? nullptr : it->second;
     }
@@ -96,7 +87,7 @@ public:
     /// 连接服务的官方机器人（按配置顺序）。
     std::vector<std::shared_ptr<Relay>> relaysFor(const ConnectionConfig& conn) const {
         std::vector<std::shared_ptr<Relay>> out;
-        for (const auto& r : relays_) if (conn.serves(r->id())) out.push_back(r);
+        for (const auto& r : relays()) if (conn.serves(r->id())) out.push_back(r);
         return out;
     }
 
@@ -109,6 +100,18 @@ public:
         return id;
     }
     void removeSink(int id) { std::lock_guard lock(sinkMu_); sinks_.erase(id); }
+
+    /// 连接的设置变了（服务的机器人、消息格式、是否上报自身消息）：更新已有订阅。
+    /// keepBots 为 true 时保留订阅原有的机器人范围（反向 WS 一条连接只对应一个机器人）。
+    void updateSinks(const ConnectionConfig& conn, bool keepBots) {
+        std::lock_guard lock(sinkMu_);
+        for (auto& [id, entry] : sinks_) {
+            if (entry.connId != conn.id) continue;
+            if (!keepBots) entry.bots = conn.bots;
+            entry.reportSelf = conn.reportSelf;
+            entry.asString = conn.messageFormat == "string";
+        }
+    }
 
     /// 发往某个连接的全部订阅者（心跳用）。
     void emitTo(const std::string& connId, const std::string& botId, const json& event) { dispatch(&connId, botId, event); }
@@ -166,12 +169,12 @@ public:
     }
 
     void prune() {
-        if (config_.messageRetentionDays > 0)
-            store_->pruneMessages(static_cast<int64_t>(std::time(nullptr)) - static_cast<int64_t>(config_.messageRetentionDays) * 86400);
+        const int days = config().messageRetentionDays;
+        if (days > 0) store_->pruneMessages(static_cast<int64_t>(std::time(nullptr)) - static_cast<int64_t>(days) * 86400);
     }
 
-    uint64_t received() const { uint64_t n = 0; for (const auto& r : relays_) n += r->received(); return n; }
-    uint64_t sent() const { uint64_t n = 0; for (const auto& r : relays_) n += r->sent(); return n; }
+    uint64_t received() const { uint64_t n = 0; for (const auto& r : relays()) n += r->received(); return n; }
+    uint64_t sent() const { uint64_t n = 0; for (const auto& r : relays()) n += r->sent(); return n; }
 
 private:
     struct Entry {
@@ -183,6 +186,91 @@ private:
     };
 
     void say(LogLevel level, const std::string& message) const { if (log_) log_(level, message); }
+
+    /// 对比前后两份机器人配置：停掉删除、停用或改过的，启动新增与改过的。
+    void applyBots(const std::vector<BotConfig>& before, const std::vector<BotConfig>& after) {
+        auto find = [](const std::vector<BotConfig>& list, const std::string& id) -> const BotConfig* {
+            for (const auto& b : list) if (b.id == id) return &b;
+            return nullptr;
+        };
+        std::vector<std::shared_ptr<Relay>> stopRelays;
+        std::vector<std::shared_ptr<LegacyClient>> stopLegacies;
+        std::vector<BotConfig> startList;
+        {
+            std::lock_guard lock(mu_);
+            for (auto it = relays_.begin(); it != relays_.end();) {
+                const auto* next = find(after, (*it)->id());
+                const auto* prev = find(before, (*it)->id());
+                if (!next || !next->enabled || !next->official() || (prev && !sameBot(*prev, *next))) {
+                    stopRelays.push_back(*it);
+                    it = relays_.erase(it);
+                } else ++it;
+            }
+            for (auto it = legacies_.begin(); it != legacies_.end();) {
+                const auto* next = find(after, it->first);
+                const auto* prev = find(before, it->first);
+                if (!next || !next->enabled || next->official() || (prev && !sameBot(*prev, *next))) {
+                    stopLegacies.push_back(it->second);
+                    it = legacies_.erase(it);
+                } else ++it;
+            }
+            for (const auto& b : after) {
+                if (!b.enabled) continue;
+                const bool running = b.official()
+                    ? std::any_of(relays_.begin(), relays_.end(), [&](const auto& r) { return r->id() == b.id; })
+                    : legacies_.count(b.id) > 0;
+                if (!running) startList.push_back(b);
+            }
+        }
+        for (auto& r : stopRelays) {
+            webhooks_.unbind(r->config().appId, r->id());
+            r->stop();
+            say(LogLevel::info, "已停止官方机器人「" + r->config().name + "」");
+        }
+        for (auto& l : stopLegacies) l->stop();
+        std::weak_ptr<Hub> weak = weak_from_this();
+        for (const auto& b : startList) {
+            if (b.official()) {
+                auto relay = std::make_shared<Relay>(b, store_, log_, hooksFor(b));
+                relay->init();
+                { std::lock_guard lock(mu_); relays_.push_back(relay); }
+                if (b.webhook) webhooks_.bind(b.appId, b.id, relay);
+                relay->start();
+            } else {
+                auto client = std::make_shared<LegacyClient>(b, [weak](const LegacyMessage& m) {
+                    if (auto self = weak.lock()) self->bind()->onLegacy(m);
+                }, log_);
+                { std::lock_guard lock(mu_); legacies_[b.id] = client; }
+                client->start();
+            }
+        }
+        // 绑定服务的设置与「有没有原 QQ 机器人」都可能变了，换一个新的服务实例。
+        const auto cfg = config();
+        bool legacy = false;
+        for (const auto& b : cfg.bots) if (b.enabled && !b.official()) legacy = true;
+        auto service = std::make_shared<BindService>(cfg.bind, store_, mailer_, log_);
+        service->setLegacyAvailable(legacy);
+        { std::lock_guard lock(mu_); bind_ = service; }
+    }
+
+    Relay::Hooks hooksFor(const BotConfig& b) {
+        std::weak_ptr<Hub> weak = weak_from_this();
+        Relay::Hooks hooks;
+        const auto id = b.id;
+        hooks.emit = [weak, id](const json& event) { if (auto self = weak.lock()) self->emit(id, event); };
+        hooks.intercept = [weak](Relay& relay, const event::MessageEvent& e) {
+            auto self = weak.lock(); if (!self) return false;
+            std::weak_ptr<Relay> r = relay.weak_from_this();
+            return self->bind()->onOfficial(e, [r, e](const std::string& text) { if (auto relay = r.lock()) relay->replyText(e, text); });
+        };
+        hooks.state = [weak, id, name = b.name](bool online, const std::string& reason) {
+            auto self = weak.lock(); if (!self) return;
+            if (!self->mailer_->config().notifyOffline) return;
+            if (online) self->mailer_->notifyOwner("online:" + id, "官方机器人「" + name + "」已恢复在线", "官方机器人「" + name + "」已重新上线。", 0);
+            else self->mailer_->notifyOwner("offline:" + id, "官方机器人「" + name + "」离线", "官方机器人「" + name + "」离线：" + reason + "\n\nCatOfficial 会自动重连；长时间未恢复请检查网络与机器人配置。");
+        };
+        return hooks;
+    }
 
     void dispatch(const std::string* connId, const std::string& botId, const json& event) {
         const bool selfMessage = event.value("post_type", std::string()) == "message_sent";
@@ -201,6 +289,7 @@ private:
         }
     }
 
+    mutable std::mutex mu_;
     Config config_;
     std::shared_ptr<Store> store_;
     Logger log_;

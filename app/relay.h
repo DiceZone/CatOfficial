@@ -95,7 +95,7 @@ public:
         std::string error;
         { std::lock_guard lock(errorMu_); error = lastError_; }
         return json{{"configured", configured()}, {"online", bot_->online()}, {"self_id", selfId()}, {"nickname", bot_->username()},
-                    {"avatar", bot_->avatar()}, {"app_id", config_.appId}, {"mode", config_.webhook ? "webhook" : "gateway"},
+                    {"avatar", bot_->avatar()}, {"app_id", config_.appId}, {"mode", config_.webhook ? "webhook" : "websocket"},
                     {"received", received_.load()}, {"sent", sent_.load()}, {"error", bot_->online() ? std::string() : error}};
     }
 

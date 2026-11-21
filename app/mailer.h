@@ -27,12 +27,13 @@ public:
 
     Mailer(SmtpConfig config, Logger log) : config_(std::move(config)), log_(std::move(log)) {}
 
-    bool usable() const { return config_.usable(); }
-    const SmtpConfig& config() const { return config_; }
+    bool usable() const { return config().usable(); }
+    SmtpConfig config() const { std::lock_guard lock(mu_); return config_; }
+    void setConfig(SmtpConfig config) { std::lock_guard lock(mu_); config_ = std::move(config); }
 
     void send(const std::string& to, const std::string& subject, const std::string& body, Done done = {}) {
-        if (!usable()) { if (done) done(false, "未启用或未配置 SMTP"); return; }
-        auto config = config_;
+        auto config = this->config();
+        if (!config.usable()) { if (done) done(false, "未启用或未配置 SMTP"); return; }
         auto log = log_;
         std::thread([config, log, to, subject, body, done] {
             std::string error;
@@ -44,7 +45,8 @@ public:
 
     /// 给主人发通知；同一 key 在 throttleSeconds 内只发一次。
     void notifyOwner(const std::string& key, const std::string& subject, const std::string& body, int throttleSeconds = 600) {
-        if (!usable() || config_.ownerEmail.empty()) return;
+        const auto config = this->config();
+        if (!config.usable() || config.ownerEmail.empty()) return;
         {
             std::lock_guard lock(mu_);
             const auto now = std::time(nullptr);
@@ -52,7 +54,7 @@ public:
             if (last && now - last < throttleSeconds) return;
             last = now;
         }
-        send(config_.ownerEmail, subject, body);
+        send(config.ownerEmail, subject, body);
     }
 
     static std::string encodeHeader(const std::string& text) { return "=?UTF-8?B?" + drogon::utils::base64Encode(text) + "?="; }
@@ -125,7 +127,7 @@ private:
 
     SmtpConfig config_;
     Logger log_;
-    std::mutex mu_;
+    mutable std::mutex mu_;
     std::map<std::string, std::time_t> lastSent_;
 };
 

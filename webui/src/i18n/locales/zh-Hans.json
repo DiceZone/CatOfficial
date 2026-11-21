@@ -22,7 +22,7 @@
     "menu": "菜单"
   },
   "restart": {
-    "pending": "配置已修改，重启后生效。",
+    "pending": "面板地址、Webhook 入口或数据目录已修改，重启后生效。",
     "now": "立即重启",
     "running": "正在重启…",
     "done": "已重启"
@@ -42,8 +42,8 @@
     "more": "更多操作",
     "enabled": "启用",
     "failed": "操作失败：{{error}}",
-    "saved": "已保存，重启后生效",
-    "deleted": "已删除，重启后生效"
+    "saved": "已保存并生效",
+    "deleted": "已删除"
   },
   "login": {
     "title": "登录管理面板",
@@ -56,7 +56,7 @@
     "offline": "离线",
     "connecting": "连接中",
     "disabled": "已停用",
-    "pending": "重启后生效"
+    "pending": "启动中"
   },
   "dashboard": {
     "title": "概览",
@@ -95,7 +95,6 @@
     "app_secret": "AppSecret",
     "app_secret_keep": "已设置，留空表示不修改",
     "mode": "接收方式",
-    "mode_gateway": "Gateway（主动连接）",
     "mode_webhook": "Webhook（官方回调）",
     "webhook_hint": "Webhook 需要在设置中填写入口端口，并在开放平台把回调地址指向它。",
     "subscribe": "订阅群成员变动事件",
@@ -121,7 +120,8 @@
     "sent": "发出",
     "edit_title": "编辑机器人",
     "add_title": "添加机器人",
-    "delete_confirm": "删除机器人「{{name}}」？使用它的连接会改为服务其余机器人。"
+    "delete_confirm": "删除机器人「{{name}}」？使用它的连接会改为服务其余机器人。",
+    "mode_websocket": "WebSocket（主动连接）"
   },
   "connections": {
     "title": "连接管理",
@@ -224,7 +224,7 @@
   },
   "settings": {
     "title": "设置",
-    "description": "修改会写入配置文件，重启后生效。",
+    "description": "修改会写入配置文件并立即生效；面板地址、Webhook 入口与数据目录需要重启。",
     "webhook": "官方 Webhook 入口",
     "webhook_hint": "只有使用 Webhook 接收的官方机器人需要。官方回调需要公网 HTTPS 地址，一般放在反向代理之后；端口填 0 表示不开。",
     "host": "监听地址",

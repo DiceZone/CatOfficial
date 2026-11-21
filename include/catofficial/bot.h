@@ -1,7 +1,7 @@
 #pragma once
 
 // 一个官方机器人的完整生命周期：取 Token → 机器人资料 → 分享链接（真实 QQ 号）→
-// Gateway 或 Webhook 收事件 → 解析成中性事件 → 发送时自动补全被动回复。
+// WebSocket（官方文档称 Gateway）或 Webhook 收事件 → 解析成中性事件 → 发送时自动补全被动回复。
 //
 // Bot 只做协议层的事，不决定上层如何呈现：消息与通知以 event::MessageEvent /
 // event::Notice 交给 Handlers，发送接受官方消息体（content / markdown / media …）。
@@ -37,7 +37,7 @@ public:
     struct Options {
         std::string appId;
         std::string appSecret;
-        bool webhook = false;                    // true：事件经 Webhook 送达，不连 Gateway
+        bool webhook = false;                    // true：事件经 Webhook 送达，不连 WebSocket
         bool subscribeGroupMemberEvents = false;
         std::string clientName = "CatOfficial";
     };
@@ -234,8 +234,8 @@ private:
         hooks.dispatch = [weak](const std::string& type, const json& d, const std::string& eventId) {
             if (auto self = weak.lock()) self->dispatch(type, d, eventId);
         };
-        hooks.closed = [weak] { if (auto self = weak.lock()) self->goOffline("Gateway 连接已断开"); };
-        hooks.reconnecting = [weak] { if (auto self = weak.lock()) self->say(LogLevel::info, "正在重连 Gateway"); };
+        hooks.closed = [weak] { if (auto self = weak.lock()) self->goOffline("WebSocket 连接已断开"); };
+        hooks.reconnecting = [weak] { if (auto self = weak.lock()) self->say(LogLevel::info, "正在重连 WebSocket"); };
         hooks.failed = [weak](const std::string& error) {
             if (auto self = weak.lock()) { self->say(LogLevel::error, error); self->goOffline(error); }
         };

@@ -27,7 +27,7 @@ catofficial [配置文件]
 | 官民绑定 | 已绑定的用户与群、等待确认的群、手动绑定与解绑 |
 | 设置 | 邮件（SMTP）、绑定指令、Webhook 入口、面板端口与密码 |
 
-- 机器人、连接与设置的修改写入配置文件，面板顶部会提示「重启后生效」，点一下即可重启；重启后登录状态保留。
+- 机器人、连接与设置的修改写入配置文件并立即生效，不用重启。只有面板自身的地址、官方 Webhook 入口与数据目录改了要重启，面板顶部会提示，点一下即可；重启后登录状态保留。
 - 面板与 OneBot 使用不同端口。默认只监听本机；改成 `0.0.0.0` 时其他机器也能访问，请使用足够强的密码。同一 IP 连续输错 5 次密码会被暂停 5 分钟。
 - 前端文件放在程序旁的 `web` 目录（`webui.root` 可改）。从源码构建：`cd webui && npm install && npm run build`，再把 `webui/dist` 复制为 `web`。
 
@@ -42,7 +42,9 @@ catofficial [配置文件]
 | `http_client` | HTTP POST 上报；设了令牌时带 `X-Signature: sha1=…`；响应体可做快速回复（`reply`、`auto_escape`、`at_sender`） |
 | `ws_client` | 反向 WebSocket（Universal）：每个机器人一条连接，带 `X-Self-ID`；断线按 `reconnect_interval` 重连 |
 
-鉴权用 `Authorization: Bearer <令牌>`，或查询参数 `access_token`。一个连接服务多个官方机器人时，事件带各自的 `self_id`；调用动作时用参数 `self_id`（或请求头 `X-Self-ID`）指定机器人，不指定则用第一个。开启「上报自身消息」后，机器人发出的消息以 `message_sent` 事件上报。
+鉴权用 `Authorization: Bearer <令牌>`，或查询参数 `access_token`。
+
+反向 WebSocket、HTTP POST 上报与原 QQ 机器人的地址可以是 `wss://` / `https://`。`http_server` 与 `ws_server` 本身不带 TLS，需要让外网应用以 `wss://` 接入时，请在前面放 Nginx、Caddy 等反向代理。一个连接服务多个官方机器人时，事件带各自的 `self_id`；调用动作时用参数 `self_id`（或请求头 `X-Self-ID`）指定机器人，不指定则用第一个。开启「上报自身消息」后，机器人发出的消息以 `message_sent` 事件上报。
 
 配置文件里的写法：
 
@@ -50,7 +52,7 @@ catofficial [配置文件]
 {
   "bots": [
     { "id": "bot1", "name": "主号", "enabled": true, "type": "official", "app_id": "", "app_secret": "",
-      "mode": "gateway", "subscribe_group_member_events": false, "auto_ack_interactions": true },
+      "mode": "websocket", "subscribe_group_member_events": false, "auto_ack_interactions": true },
     { "id": "bot2", "name": "原 QQ 号", "enabled": true, "type": "onebot", "url": "ws://127.0.0.1:3001", "token": "" }
   ],
   "connections": [
@@ -133,7 +135,7 @@ catofficial [配置文件]
 
 ## 构建
 
-需要 CMake 3.21+、C++20，以及 [Drogon](https://github.com/drogonframework/drogon)、[nlohmann/json](https://github.com/nlohmann/json)、OpenSSL、SQLite3、libcurl（`vcpkg.json` 已列出）。
+需要 CMake 3.21+、C++20，以及 [Drogon](https://github.com/drogonframework/drogon)、[IXWebSocket](https://github.com/machinezone/IXWebSocket)、[nlohmann/json](https://github.com/nlohmann/json)、OpenSSL、SQLite3、libcurl（`vcpkg.json` 已列出）。
 
 ```
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
@@ -155,13 +157,13 @@ target_link_libraries(your-target PRIVATE catofficial::core)
 |---|---|
 | `catofficial/bot.h` | 一个机器人的完整生命周期，发送时自动补全被动回复 |
 | `catofficial/qrlogin.h` | 扫码登录官方机器人，取回 AppID 与 AppSecret |
-| `catofficial/session.h` | AccessToken、Gateway 连接、鉴权、心跳与重连 |
+| `catofficial/session.h` | AccessToken、WebSocket 连接（官方文档称 Gateway）、鉴权、心跳与重连 |
 | `catofficial/event.h` | 与框架无关的事件解析 |
 | `catofficial/api.h` | 开放平台接口调用、机器人资料与分享链接 |
 | `catofficial/media.h` | 富媒体 URL 直传与本地文件分片上传 |
 | `catofficial/webhook.h` | Webhook 验签、回调地址验证与按 AppID 分派 |
 | `catofficial/reply_state.h` | 被动回复序号与事件去重 |
-| `catofficial/protocol.h` | 字段解析、Gateway intents |
+| `catofficial/protocol.h` | 字段解析、WebSocket 订阅的 intents |
 | `catofficial/message.h` | 官方消息格式（表情、图片地址等） |
 
 ## 许可
