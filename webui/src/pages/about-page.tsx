@@ -244,7 +244,10 @@ function UpdateCard() {
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-2">
-              <Label htmlFor="update-interval">{t('about.update_interval')}</Label>
+              {/* 与 DN 相同：两栏的标签行都撑到 min-h-6，带说明按钮的一栏不会把下拉框往下推 */}
+              <div className="flex min-h-6 flex-1 items-center">
+                <Label htmlFor="update-interval">{t('about.update_interval')}</Label>
+              </div>
               <Select value={String(draft?.intervalHours ?? 6)} disabled={!draft || !draft.autoCheck} onValueChange={(value) => setting('intervalHours', Number(value))}>
                 <SelectTrigger id="update-interval"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -254,7 +257,7 @@ function UpdateCard() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-1.5">
+              <div className="flex min-h-6 flex-1 items-center gap-1.5">
                 <Label htmlFor="update-auto-action">{t('about.update_auto_action')}</Label>
                 <FeatureHelp title={t('about.update_auto_action')} description={
                   <dl className="space-y-2">
