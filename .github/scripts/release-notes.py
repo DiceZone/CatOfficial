@@ -70,7 +70,7 @@ def main() -> None:
         '| Linux（ARM64） | `CatOfficial-*-linux-arm64.tar.gz` |',
         '| macOS（Apple 芯片） | `CatOfficial-*-macos-arm64.tar.gz` |',
         '',
-        '解压后运行 `catofficial`，浏览器打开 http://localhost:18082 进入管理面板。升级时覆盖解压即可，`config.json` 与 `data` 不受影响。',
+        '解压出 `CatOfficial-beta` 文件夹后运行其中的 `catofficial`（Windows 双击 `catofficial.exe`），浏览器打开 http://localhost:18082 进入管理面板。已安装的可以在面板「关于」里在线更新；手动升级时覆盖解压即可，`config.json` 与 `data` 不受影响。',
         '各文件的 SHA-256 见 `SHA256SUMS.txt`。',
         '',
     ]

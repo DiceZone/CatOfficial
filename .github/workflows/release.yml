@@ -192,7 +192,7 @@ jobs:
         run: |
           chmod +x scripts/package-unix.sh
           scripts/package-unix.sh ${{ matrix.os }} ${{ matrix.arch }} '${{ needs.prepare.outputs.full }}' build webui/dist
-          if [ "$RUNNER_OS" = Linux ]; then ldd build/catofficial || true; else otool -L build/catofficial; fi
+          if [ "$RUNNER_OS" = Linux ]; then ldd build/catofficial-core || true; else otool -L build/catofficial-core; fi
       - uses: actions/upload-artifact@v4
         with:
           name: CatOfficial-${{ matrix.os }}-${{ matrix.arch }}
@@ -238,6 +238,10 @@ jobs:
         run: |
           python3 .github/scripts/release-notes.py --tag '${{ needs.prepare.outputs.tag }}' --sha '${{ github.sha }}' --repo '${{ github.repository }}' --output release-notes.md
           cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Generate update manifest
+        shell: bash
+        run: |
+          python3 .github/scripts/update-manifest.py --dir artifacts --tag '${{ needs.prepare.outputs.tag }}' --version '${{ needs.prepare.outputs.version }}' --build '${{ needs.prepare.outputs.build }}' --repo '${{ github.repository }}' --notes release-notes.md --output artifacts/update-manifest.json
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -245,7 +249,10 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: CatOfficial ${{ needs.prepare.outputs.full }}
           body_path: release-notes.md
-          prerelease: true
+          # 不标为预发布：程序检查更新读的是 releases/latest，GitHub 的 latest 会跳过预发布版本（与 Dice!Next 相同）。
+          prerelease: false
+          make_latest: true
           files: |
             artifacts/CatOfficial-*
             artifacts/SHA256SUMS.txt
+            artifacts/update-manifest.json
