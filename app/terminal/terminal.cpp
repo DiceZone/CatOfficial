@@ -257,6 +257,46 @@ void SessionManager::closeAll() {
 
 // ─── 程序托管 ─────────────────────────────────────────────────
 
+std::string resolveProgramCommand(const std::string& command, const fs::path& cwd) {
+    const auto start = command.find_first_not_of(" \t");
+    if (start == std::string::npos) return command;
+    std::string first, rest;
+    if (command[start] == '"') {
+        const auto end = command.find('"', start + 1);
+        if (end == std::string::npos) return command;
+        first = command.substr(start + 1, end - start - 1);
+        rest = command.substr(end + 1);
+    } else {
+        const auto end = command.find_first_of(" \t", start);
+        first = command.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        rest = end == std::string::npos ? std::string() : command.substr(end);
+    }
+    if (first.empty()) return command;
+    const auto path = fromUtf8(first);
+    if (path.is_absolute()) return command;
+    std::vector<fs::path> candidates{cwd / path};
+#ifdef _WIN32
+    // 只看是不是以 .exe 结尾：DiceDriver.OneBot_1.1.1(16) 这种名字里的「.1(16)」也会被当成扩展名
+    std::string lowered = first;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lowered.size() < 4 || lowered.compare(lowered.size() - 4, 4, ".exe") != 0) candidates.push_back(cwd / fromUtf8(first + ".exe"));
+#endif
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (!fs::is_regular_file(candidate, ec)) continue;
+        const auto absolute = utf8(fs::absolute(candidate, ec).lexically_normal());
+#ifdef _WIN32
+        return "\"" + absolute + "\"" + rest;
+#else
+        // 交给 sh 执行：单引号括起来，路径里有空格、括号也不会被拆开
+        std::string quoted = "'";
+        for (char c : absolute) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+        return quoted + "'" + rest;
+#endif
+    }
+    return command;   // 不在工作目录里：按原样交给系统去 PATH 里找（java、python 之类）
+}
+
 json ProgramConfig::toJson() const {
     json envJson = json::object();
     for (const auto& [k, v] : env) envJson[k] = v;
@@ -425,9 +465,9 @@ bool ProgramManager::launch(const std::shared_ptr<Runtime>& r, std::string& erro
         config = r->config;
     }
 #ifdef _WIN32
-    options.commandLine = widen(config.command);
+    options.commandLine = widen(resolveProgramCommand(config.command, workingDirectory(config)));
 #else
-    options.argv = {"/bin/sh", "-c", config.command};
+    options.argv = {"/bin/sh", "-c", resolveProgramCommand(config.command, workingDirectory(config))};
 #endif
     options.cwd = utf8(workingDirectory(config));
     options.env = config.env;

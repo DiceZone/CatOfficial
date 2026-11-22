@@ -93,6 +93,11 @@ struct ProgramConfig {
     static ProgramConfig fromJson(const json& j);
 };
 
+/// 启动命令的第一项是相对路径、而那个文件就在工作目录里时，换成它的绝对路径。
+/// Windows 的 CreateProcessW 找程序时不看子进程的工作目录（只看 CatOfficial 自己的目录、当前目录、System32 与 PATH），
+/// 不换的话「工作目录里的 xxx.exe」永远找不到；POSIX 的 sh 也只按 PATH 找不带斜杠的名字。
+std::string resolveProgramCommand(const std::string& command, const std::filesystem::path& cwd);
+
 class ProgramManager {
 public:
     ProgramManager(std::filesystem::path configFile, std::filesystem::path installRoot, Logger log);

@@ -11,6 +11,7 @@
 #include "../app/platform/instance_guard.h"
 #include "../app/files/file_store.h"
 #include "../app/terminal/pty.h"
+#include "../app/terminal/terminal.h"
 
 #include <catofficial/bot.h>
 
@@ -590,6 +591,23 @@ TEST(FullAccessListsTheWholeMachine) {
 #else
     CHECK(std::any_of(root.begin(), root.end(), [](const files::Entry& e) { return e.name == "tmp" || e.name == "usr"; }));
 #endif
+}
+
+TEST(ProgramCommandFindsExecutablesInItsWorkingDirectory) {
+    namespace fs = std::filesystem;
+    // 实际案例：命令写 DiceDriver.OneBot_1.1.1(16).exe、工作目录 dice-suhui，程序就在那个目录里
+    const auto dir = fs::temp_directory_path() / ("catofficial-prog-" + std::to_string(std::time(nullptr))) / "dice-suhui";
+    fs::create_directories(dir);
+    std::ofstream(dir / "DiceDriver.OneBot_1.1.1(16).exe") << "x";
+    const auto resolved = terminal::resolveProgramCommand("DiceDriver.OneBot_1.1.1(16).exe --port 1", dir);
+    CHECK(resolved.find(utf8(fs::absolute(dir / "DiceDriver.OneBot_1.1.1(16).exe"))) != std::string::npos);
+    CHECK(resolved.size() > 8 && resolved.substr(resolved.size() - 9) == " --port 1");
+#ifdef _WIN32
+    CHECK(terminal::resolveProgramCommand("DiceDriver.OneBot_1.1.1(16)", dir).find(".exe\"") != std::string::npos);
+#endif
+    // 不在工作目录里的（java、python 之类）原样交给系统去 PATH 里找
+    CHECK_EQ(terminal::resolveProgramCommand("java -jar Dice.jar", dir), std::string("java -jar Dice.jar"));
+    fs::remove_all(dir.parent_path());
 }
 
 TEST(PtyRunsACommandAndReadsItsOutput) {
