@@ -403,6 +403,25 @@ std::string releaseNotesPreview(const std::string& source) {
     return plain;
 }
 
+bool extractTarArchive(const fs::path& archive, const fs::path& output, std::string& error) {
+    std::error_code ec;
+    fs::create_directories(output, ec);
+#if defined(_WIN32)
+    const std::wstring archivePath = fs::absolute(archive).wstring();
+    const auto listed = runSystemTool(L"tar.exe", {L"-tf", archivePath}, {}, 8 * 1024 * 1024);
+    if (listed.exitCode != 0 || listed.truncated || listed.output.empty()) { error = "无法读取压缩包，可能已损坏"; return false; }
+    std::istringstream entries(listed.output);
+    std::string entry;
+    while (std::getline(entries, entry))
+        if (!archiveEntrySafe(entry)) { error = "压缩包里有越界路径「" + entry + "」，已中止"; return false; }
+    const auto extracted = runSystemTool(L"tar.exe", {L"-xf", archivePath, L"-C", fs::absolute(output).wstring()}, {}, 4096);
+    if (extracted.exitCode != 0) { error = "解压失败，可能磁盘已满或压缩包已损坏"; return false; }
+    return true;
+#else
+    return extractPosixUpdate(fs::absolute(archive), fs::absolute(output), error);
+#endif
+}
+
 bool parseReleaseManifest(const std::string& text, ReleaseManifest& manifest, std::string& error) {
     try {
         const auto root = nlohmann::json::parse(text);

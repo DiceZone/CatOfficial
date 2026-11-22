@@ -508,7 +508,9 @@ private:
         route("/api/webui/programs", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
             auto programs = toolsSlot().programs;
             if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
-            cb(jsonResponse(200, json{{"programs", programs->list()}, {"exposed", panelExposed()}, {"max_programs", programs->maxPrograms()}}));
+            cb(jsonResponse(200, json{{"programs", programs->list()}, {"exposed", panelExposed()}, {"max_programs", programs->maxPrograms()},
+                                      {"full_access", programs->fullAccess()}, {"files_enabled", toolsSlot().files != nullptr},
+                                      {"settings", programs->logSettings().toJson()}}));
         });
         route("/api/webui/programs", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
             auto programs = toolsSlot().programs;
@@ -528,11 +530,59 @@ private:
             else if (action == "stop") ok = programs->stop(id, false, error);
             else if (action == "kill") ok = programs->stop(id, true, error);
             else if (action == "restart") ok = programs->restart(id, error);
-            else if (action == "delete") ok = programs->remove(id, error);
+            else if (action == "delete") ok = programs->remove(id, body.value("remove_files", false), error);
             else if (action == "clear") { programs->clearOutput(id); ok = true; }
             else error = "未知的操作";
             cb(ok ? jsonResponse(200, json{{"ok", true}, {"programs", programs->list()}}) : jsonResponse(400, json{{"error", error}}));
         });
+        route("/api/webui/programs/settings", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto programs = toolsSlot().programs;
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
+            std::string error;
+            cb(programs->saveLogSettings(body, error) ? jsonResponse(200, programs->logSettings().toJson()) : jsonResponse(400, json{{"error", error}}));
+        });
+        // 实例的历史日志：列表与下载（不依赖文件管理是否开启）
+        route("/api/webui/programs/logs", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            auto programs = toolsSlot().programs;
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
+            cb(jsonResponse(200, json{{"logs", programs->logList(req->getParameter("id"))}, {"settings", programs->logSettings().toJson()}}));
+        });
+        drogon::app().registerHandler("/api/webui/programs/log", [](const drogon::HttpRequestPtr& req, Callback&& cb) {
+            if (!guardRaw(req, cb)) return;
+            auto programs = toolsSlot().programs;
+            const auto path = programs ? programs->logFile(req->getParameter("id"), req->getParameter("name")) : std::filesystem::path();
+            if (path.empty()) { cb(jsonResponse(404, json{{"error", "日志不存在或已被清理"}})); return; }
+            auto resp = drogon::HttpResponse::newFileResponse(utf8(path));
+            const auto name = req->getParameter("name");
+            resp->addHeader("Content-Disposition", std::string(req->getParameter("inline") == "1" ? "inline" : "attachment") + "; filename=\"" + name + "\"");
+            resp->addHeader("Cache-Control", "no-store");
+            cb(resp);
+        }, {drogon::Get});
+        // 导入压缩包作为实例目录：请求体就是压缩包，?id=&name=&encoding=
+        drogon::app().registerHandler("/api/webui/programs/import", [](const drogon::HttpRequestPtr& req, Callback&& cb) {
+            if (!guardRaw(req, cb)) return;
+            auto programs = toolsSlot().programs;
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
+            const auto id = req->getParameter("id");
+            const auto name = req->getParameter("name");
+            const auto encoding = req->getParameter("encoding");
+            std::error_code ec;
+            const auto staging = std::filesystem::temp_directory_path(ec) / ("catofficial-import-" + randomHex(8));
+            {
+                std::ofstream out(staging, std::ios::binary | std::ios::trunc);
+                const auto body = req->getBody();
+                out.write(body.data(), static_cast<std::streamsize>(body.size()));
+                if (!out) { std::filesystem::remove(staging, ec); cb(jsonResponse(500, json{{"error", "暂存压缩包失败，磁盘可能已满"}})); return; }
+            }
+            auto shared = std::make_shared<Callback>(std::move(cb));
+            std::thread([programs, id, name, encoding, staging, shared] {
+                std::string error;
+                const bool ok = programs->importArchive(id, staging, name, encoding.empty() ? "utf8" : encoding, error);
+                std::error_code ignored;
+                std::filesystem::remove(staging, ignored);
+                (*shared)(ok ? jsonResponse(200, json{{"ok", true}, {"programs", programs->list()}}) : jsonResponse(400, json{{"error", error}}));
+            }).detach();
+        }, {drogon::Post});
         route("/api/webui/programs/read", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
             auto programs = toolsSlot().programs;
             if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }

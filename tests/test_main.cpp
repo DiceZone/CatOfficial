@@ -17,6 +17,7 @@
 #include <catofficial/bot.h>
 
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <filesystem>
@@ -640,6 +641,80 @@ TEST(OptionsComeFromArgumentsOrEnvironment) {
     CHECK(!parseOptions({"--disable-file"}, read).errors.empty());
     CHECK(!parseOptions({"--max-programs=-1"}, read).errors.empty());
     CHECK(!parseOptions({"--max-programs=abc"}, read).errors.empty());
+}
+
+TEST(ProgramInstancesLiveUnderDataInstances) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path() / ("catofficial-instances-" + std::to_string(std::time(nullptr)));
+    fs::create_directories(root / "data");
+    fs::create_directories(root / "dice-suhui");
+    std::ofstream(root / "dice-suhui" / "DiceDriver.exe") << "x";
+    // 早期版本的 programs.json：数组，实例目录相对于安装目录
+    std::ofstream(root / "data" / "programs.json") << R"([{"id":"a1","name":"溯洄","command":"DiceDriver.exe","cwd":"dice-suhui"},
+                                                        {"id":"b2","name":"希亚的骰子","command":"x"}])";
+    auto store = std::make_shared<files::FileStore>(root, false);
+    {
+        terminal::ProgramManager manager(root / "data" / "programs.json", root, {}, 32, false, store);
+        // 旧目录挪进 data/instances；没填目录的按名称起一个
+        CHECK(fs::exists(root / "data" / "instances" / "dice-suhui" / "DiceDriver.exe"));
+        CHECK(!fs::exists(root / "dice-suhui"));
+        const auto list = manager.list();
+        CHECK_EQ(list[1].value("cwd", std::string()), std::string("希亚的骰子"));
+
+        std::string error;
+        CHECK(manager.save(json{{"name", "越界"}, {"command", "x"}, {"cwd", "../evil"}}, error).is_null());
+        CHECK(manager.save(json{{"name", "越界"}, {"command", "x"}, {"cwd", utf8(fs::temp_directory_path())}}, error).is_null());
+        CHECK(error.find("--files-full-access") != std::string::npos);
+        CHECK(manager.save(json{{"name", "重名"}, {"command", "x"}, {"cwd", "dice-suhui"}}, error).is_null());   // 已被「溯洄」使用
+        const auto created = manager.save(json{{"name", "希亚/测试"}, {"command", "x"}}, error);
+        CHECK_EQ(created.value("cwd", std::string()), std::string("希亚_测试"));
+        CHECK(fs::is_directory(root / "data" / "instances" / fromUtf8("希亚_测试")));
+
+        // 导入压缩包：外面套的一层 Dice/ 自动去掉，旧目录进回收站
+        fs::create_directories(root / "pkg" / "Dice");
+        std::ofstream(root / "pkg" / "Dice" / fromUtf8("新文件.txt")) << "new";
+        store->compress({"/pkg/Dice"}, "/pkg/dice.zip", false, {});
+        CHECK(manager.importArchive("a1", root / "pkg" / "dice.zip", "dice.zip", "utf8", error));
+        CHECK(fs::exists(root / "data" / "instances" / "dice-suhui" / fromUtf8("新文件.txt")));
+        CHECK(!fs::exists(root / "data" / "instances" / "dice-suhui" / "DiceDriver.exe"));
+        CHECK(!store->trashList().empty());
+        CHECK(!manager.importArchive("a1", root / "pkg" / "dice.zip", "dice.rar", "utf8", error));
+
+        // 删除时选择连目录一起移进回收站
+        CHECK(manager.remove(created.value("id", std::string()), true, error));
+        CHECK(!fs::exists(root / "data" / "instances" / fromUtf8("希亚_测试")));
+    }
+    // 保存后变成 {programs, settings}
+    std::ifstream in(root / "data" / "programs.json");
+    const auto saved = json::parse(in);
+    CHECK(saved.is_object() && saved["programs"].size() == 2);
+    CHECK_EQ(saved["settings"].value("log_retention_days", 0), 30);
+    in.close();
+    fs::remove_all(root);
+}
+
+TEST(ProgramLogsPersistAndExpire) {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / ("catofficial-logs-" + std::to_string(std::time(nullptr)));
+    terminal::ProgramLogSettings settings;
+    settings.retentionDays = 1;
+    {
+        terminal::ProgramLog log(dir, [&settings] { return settings; });
+        log.append("崩溃前的输出\r\n", std::strlen("崩溃前的输出\r\n"));
+        CHECK_EQ(log.list().size(), std::size_t(1));
+        CHECK(log.tail(1024).find("崩溃前的输出") != std::string::npos);
+        // 过期的旧日志被清掉，正在写的那份留着
+        std::ofstream(dir / "2020-01-01.log") << "old";
+        fs::last_write_time(dir / "2020-01-01.log", fs::file_time_type::clock::now() - std::chrono::hours(72));
+        log.prune();
+        CHECK(!fs::exists(dir / "2020-01-01.log"));
+        CHECK_EQ(log.list().size(), std::size_t(1));
+        CHECK(log.file("../x.log").empty());
+    }
+    // 重新打开（相当于重启 CatOfficial）后还能读到
+    terminal::ProgramLog reopened(dir, [&settings] { return settings; });
+    CHECK(reopened.tail(1024).find("崩溃前的输出") != std::string::npos);
+    fs::remove_all(dir);
 }
 
 TEST(PtyRunsACommandAndReadsItsOutput) {

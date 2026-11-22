@@ -693,9 +693,22 @@ void FileStore::extract(const std::string& archive, const std::string& target, c
     std::error_code ec;
     fs::create_directories(destination, ec);
     if (ec) throw FileError("没有权限创建：" + displayPath(target));
+    unzFile probe = openUnzip(source);
+    if (!probe) throw FileError("不是有效的 zip 压缩包：" + displayPath(archive));
+    unzClose(probe);
+    // 每个条目也要过一遍范围检查：解到根目录时，压缩包里的 .catofficial/… 不能写进回收站
+    extractZipTo(source, destination, encoding, overwrite, kMaxExtractBytes, progress, [this](const fs::path& out) { ensureInside(out); });
+}
+
+void extractZipTo(const fs::path& source, const fs::path& destination, const std::string& encoding, bool overwrite,
+                  std::uint64_t limit, const Progress& progress, const std::function<void(const fs::path&)>& guard) {
+    std::error_code ec;
+    fs::create_directories(destination, ec);
+    if (ec) throw FileError("没有权限创建解压目录");
     unzFile zip = openUnzip(source);
-    if (!zip) throw FileError("不是有效的 zip 压缩包：" + displayPath(archive));
+    if (!zip) throw FileError("不是有效的 zip 压缩包");
     struct Closer { unzFile z; ~Closer() { unzClose(z); } } closer{zip};
+    const auto kMaxExtractBytes = limit;
     if (progress) progress(0, "");
     std::uint64_t total = 0;
     std::vector<char> buffer(256 * 1024);
@@ -709,7 +722,7 @@ void FileStore::extract(const std::string& archive, const std::string& target, c
         const auto real = fs::weakly_canonical(out, canonicalEc);
         if (!within(canonicalEc ? out : real, fs::weakly_canonical(destination, canonicalEc)))
             throw FileError("压缩包里有越界路径「" + entry.name + "」，已中止");
-        ensureInside(out);
+        if (guard) guard(out);
         if (progress) progress(1, entry.name);
         if (entry.isDir) {
             fs::create_directories(out, ec);

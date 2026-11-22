@@ -15,6 +15,19 @@ interface FilesInfo { full_access: boolean; exposed: boolean; retention_days: nu
 /// 文件管理页：照搬 BDC 的 InstanceFiles，下面附操作记录（BDC 放在实例的「操作记录」页签里）。
 export function FilesPage() {
   const { t } = useTranslation();
+  // 从程序托管「在文件管理中打开」过来：#/files?path=/data/instances/x
+  const [openPath, setOpenPath] = React.useState<{ path: string; seq: number } | undefined>(() => {
+    const requested = new URLSearchParams(window.location.hash.split('?')[1] || '').get('path');
+    return requested ? { path: requested, seq: 1 } : undefined;
+  });
+  React.useEffect(() => {
+    const update = () => {
+      const requested = new URLSearchParams(window.location.hash.split('?')[1] || '').get('path');
+      if (requested) setOpenPath((prev) => ({ path: requested, seq: (prev?.seq ?? 0) + 1 }));
+    };
+    window.addEventListener('hashchange', update);
+    return () => window.removeEventListener('hashchange', update);
+  }, []);
   const info = useQuery({ queryKey: ['files-info'], queryFn: () => apiClient.get<FilesInfo>('/api/webui/files/info') });
   const [opsKey, setOpsKey] = React.useState(0);
   const call = React.useCallback((payload: Record<string, unknown>) => apiClient.post<any>('/api/webui/files', payload), []);
@@ -23,7 +36,7 @@ export function FilesPage() {
       <PageHeader title={t('files.title')} description={t('files.description')} />
       {info.data?.exposed && <ExposedWarning />}
       <div className="space-y-6">
-        <FileManager fullAccess={info.data?.full_access ?? false} />
+        <FileManager fullAccess={info.data?.full_access ?? false} openPath={openPath} />
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between gap-3">

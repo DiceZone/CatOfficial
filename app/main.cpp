@@ -227,9 +227,12 @@ int main(int argc, char** argv) {
     const fs::path installRoot = configPath.parent_path();
     WebUi::Tools tools;
     // 用 --disable-files / --disable-terminal / --disable-programs 关掉的功能不创建：接口直接回「已关闭」，面板菜单里也不显示
-    if (!options.disableFiles) tools.files = std::make_shared<files::FileStore>(installRoot, filesFullAccess);
+    // 文件存储总是创建：程序托管删除实例目录、导入压缩包时要用它的回收站；--disable-files 只是不开放给面板
+    const auto fileStore = std::make_shared<files::FileStore>(installRoot, filesFullAccess);
+    if (!options.disableFiles) tools.files = fileStore;
     if (!options.disableTerminal) tools.sessions = std::make_shared<terminal::SessionManager>(installRoot, log);
-    if (!options.disablePrograms) tools.programs = std::make_shared<terminal::ProgramManager>(dataDir / "programs.json", installRoot, log, options.maxPrograms);
+    if (!options.disablePrograms)
+        tools.programs = std::make_shared<terminal::ProgramManager>(dataDir / "programs.json", installRoot, log, options.maxPrograms, filesFullAccess, fileStore);
     WebUi::setTools(tools);
     // 上传最大 2 GB；超过 8 MB 的请求体由 drogon 落到临时文件，不占内存
     drogon::app().setClientMaxBodySize(files::kMaxStreamUploadBytes + (1 << 20)).setClientMaxMemoryBodySize(8 << 20);
@@ -281,9 +284,12 @@ int main(int argc, char** argv) {
     else if (options.maxPrograms != 32) log(catofficial::LogLevel::info, "程序托管最多 " + std::to_string(options.maxPrograms) + " 个（--max-programs）");
     if (options.container) log(catofficial::LogLevel::info, "容器模式（--container）：在线更新只提示新版本，不下载、不安装");
     // 回收站里过期的条目每小时清一次；闲置的终端会话每五分钟收一次
-    if (tools.files) {
-        drogon::app().getLoop()->runAfter(30.0, [files = tools.files] { files->purgeExpiredTrash(); });
-        drogon::app().getLoop()->runEvery(3600.0, [files = tools.files] { files->purgeExpiredTrash(); });
+    // 回收站总要清（程序托管也往里放东西）；实例日志按设置每小时清一次
+    drogon::app().getLoop()->runAfter(30.0, [fileStore] { fileStore->purgeExpiredTrash(); });
+    drogon::app().getLoop()->runEvery(3600.0, [fileStore] { fileStore->purgeExpiredTrash(); });
+    if (tools.programs) {
+        drogon::app().getLoop()->runAfter(60.0, [programs = tools.programs] { programs->pruneLogs(); });
+        drogon::app().getLoop()->runEvery(3600.0, [programs = tools.programs] { programs->pruneLogs(); });
     }
     if (tools.sessions) drogon::app().getLoop()->runEvery(300.0, [sessions = tools.sessions] { sessions->reap(); });
     // Windows 托盘：打开应用目录 / 显示·隐藏控制台 / 打开网页面板 / 开机自启动 / 退出。

@@ -1,13 +1,20 @@
 #include "terminal.h"
 
 #include "../paths.h"
+#include "../update/update_archive.h"
 
 #include <drogon/drogon.h>
+
+#ifdef _WIN32
+#include <share.h>
+#endif
 
 #include <algorithm>
 #include <ctime>
 #include <fstream>
 #include <random>
+#include <regex>
+#include <set>
 
 namespace catofficial::app::terminal {
 
@@ -63,12 +70,15 @@ std::wstring widen(const std::string& text) {
 
 void OutputBuffer::append(const char* data, std::size_t size) {
     if (!size) return;
+    std::function<void(const char*, std::size_t)> sink;
     {
         std::lock_guard lock(mu_);
         buf_.append(data, size);
         total_ += static_cast<std::int64_t>(size);
         if (buf_.size() > kScrollbackBytes) buf_.erase(0, buf_.size() - kScrollbackBytes);
+        sink = sink_;
     }
+    if (sink) sink(data, size);
     flushWaiters();
 }
 
@@ -327,6 +337,7 @@ struct ProgramManager::Runtime {
     std::unique_ptr<Pty> pty;
     std::thread pump;
     std::shared_ptr<OutputBuffer> output = std::make_shared<OutputBuffer>();
+    std::shared_ptr<ProgramLog> log;
     std::int64_t pid = 0;
     std::string startedAt;
     int exitCode = 0;
@@ -342,19 +353,233 @@ struct ProgramManager::Runtime {
     }
 };
 
-ProgramManager::ProgramManager(fs::path configFile, fs::path installRoot, Logger log, int maxPrograms)
-    : file_(std::move(configFile)), root_(std::move(installRoot)), log_(std::move(log)), maxPrograms_(maxPrograms) {
+// ─── 实例日志 ─────────────────────────────────────────────────
+
+namespace {
+const std::regex& logNamePattern() {
+    static const std::regex pattern("^[0-9]{4}-[0-9]{2}-[0-9]{2}(-[0-9]+)?\\.log$");
+    return pattern;
+}
+
+std::string today() {
+    const std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[16];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+    return buf;
+}
+
+struct LogFileInfo { std::string name; std::uint64_t size; fs::file_time_type modified; };
+
+std::vector<LogFileInfo> logFiles(const fs::path& dir) {
+    std::vector<LogFileInfo> files;
+    std::error_code ec;
+    for (const auto& item : fs::directory_iterator(dir, ec)) {
+        const auto name = utf8(item.path().filename());
+        if (!item.is_regular_file(ec) || !std::regex_match(name, logNamePattern())) continue;
+        files.push_back({name, static_cast<std::uint64_t>(item.file_size(ec)), item.last_write_time(ec)});
+    }
+    // 旧的在前：按修改时间，再按名字
+    std::sort(files.begin(), files.end(), [](const LogFileInfo& a, const LogFileInfo& b) {
+        return a.modified != b.modified ? a.modified < b.modified : a.name < b.name;
+    });
+    return files;
+}
+}  // namespace
+
+ProgramLog::~ProgramLog() {
+    std::lock_guard lock(mu_);
+    if (stream_) std::fclose(stream_);
+}
+
+void ProgramLog::openCurrent() {
+    const auto settings = settings_ ? settings_() : ProgramLogSettings{};
+    // 单个文件最多占上限的四分之一，满了切下一份，清理时才能按份删掉旧的
+    const std::uint64_t perFile = std::max<std::uint64_t>(1ULL << 20, static_cast<std::uint64_t>(settings.maxMegabytes) * (1ULL << 20) / 4);
+    const auto date = today();
+    if (stream_ && date == currentDate_ && currentBytes_ < perFile) return;
+    if (stream_) { std::fclose(stream_); stream_ = nullptr; }
+    std::error_code ec;
+    fs::create_directories(dir_, ec);
+    for (int part = 1; part < 10000; ++part) {
+        const auto name = part == 1 ? date + ".log" : date + "-" + std::to_string(part) + ".log";
+        const auto path = dir_ / fromUtf8(name);
+        const auto size = fs::exists(path, ec) ? static_cast<std::uint64_t>(fs::file_size(path, ec)) : 0ULL;
+        if (size >= perFile) continue;
+#ifdef _WIN32
+        // 允许别人同时读（面板查看、载回控制台）；_wfopen_s 打开的文件不让别的句柄读
+        stream_ = _wfsopen(path.c_str(), L"ab", _SH_DENYNO);
+#else
+        stream_ = std::fopen(path.c_str(), "ab");
+#endif
+        currentDate_ = date;
+        current_ = path;
+        currentBytes_ = size;
+        return;
+    }
+}
+
+void ProgramLog::append(const char* data, std::size_t size) {
+    std::lock_guard lock(mu_);
+    openCurrent();
+    if (!stream_) return;
+    std::fwrite(data, 1, size, stream_);
+    std::fflush(stream_);   // 崩溃时也要留下来
+    currentBytes_ += size;
+}
+
+void ProgramLog::prune() {
+    const auto settings = settings_ ? settings_() : ProgramLogSettings{};
+    std::lock_guard lock(mu_);
+    auto files = logFiles(dir_);
+    std::error_code ec;
+    const auto now = fs::file_time_type::clock::now();
+    std::uint64_t total = 0;
+    for (const auto& f : files) total += f.size;
+    const std::uint64_t limit = static_cast<std::uint64_t>(settings.maxMegabytes) * (1ULL << 20);
+    for (const auto& f : files) {
+        const auto path = dir_ / fromUtf8(f.name);
+        if (path == current_) continue;   // 正在写的那份不删
+        const bool expired = settings.retentionDays > 0 && now - f.modified > std::chrono::hours(24 * settings.retentionDays);
+        if (!expired && total <= limit) continue;
+        fs::remove(path, ec);
+        if (!ec) total -= f.size;
+    }
+}
+
+json ProgramLog::list() const {
+    std::lock_guard lock(mu_);
+    json out = json::array();
+    auto files = logFiles(dir_);
+    for (auto it = files.rbegin(); it != files.rend(); ++it) {
+        // 正在写的那份：目录里记的大小会滞后，用实际写入的字节数
+        if (!current_.empty() && fromUtf8(it->name) == current_.filename()) it->size = currentBytes_;
+        const auto system = std::chrono::system_clock::now() +
+            std::chrono::duration_cast<std::chrono::system_clock::duration>(it->modified - fs::file_time_type::clock::now());
+        out.push_back(json{{"name", it->name}, {"size", it->size}, {"modified", std::chrono::duration_cast<std::chrono::seconds>(system.time_since_epoch()).count()}});
+    }
+    return out;
+}
+
+fs::path ProgramLog::file(const std::string& name) const {
+    if (!std::regex_match(name, logNamePattern())) return {};
+    const auto path = dir_ / fromUtf8(name);
+    std::error_code ec;
+    return fs::is_regular_file(path, ec) ? path : fs::path();
+}
+
+std::string ProgramLog::tail(std::size_t bytes) const {
+    std::lock_guard lock(mu_);
+    const auto files = logFiles(dir_);
+    if (files.empty()) return {};
+    std::ifstream in(dir_ / fromUtf8(files.back().name), std::ios::binary);
+    // 打开后再取大小：目录里记的大小对正在写的文件会滞后
+    in.seekg(0, std::ios::end);
+    const auto size = static_cast<std::uint64_t>(std::max<std::streamoff>(0, in.tellg()));
+    in.seekg(static_cast<std::streamoff>(size > bytes ? size - bytes : 0));
+    std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // 从中间截断时跳过半个 UTF-8 字符
+    return data.substr(utf8Boundary(data, 0));
+}
+
+// ─── 程序托管 ─────────────────────────────────────────────────
+
+namespace {
+/// 实例目录名里不能用的字符换成 _（Windows 的限制最严，统一按它来）。
+std::string safeFolderName(const std::string& name) {
+    std::string out;
+    for (unsigned char c : name) out += (c < 0x20 || std::string("<>:\"/\\|?*").find(static_cast<char>(c)) != std::string::npos) ? '_' : static_cast<char>(c);
+    while (!out.empty() && (out.back() == '.' || out.back() == ' ')) out.pop_back();
+    while (!out.empty() && (out.front() == '.' || out.front() == ' ')) out.erase(0, 1);
+    return out;
+}
+
+bool isPlainFolderName(const std::string& name) {
+    return !name.empty() && name != "." && name != ".." && name.find_first_of("/\\:") == std::string::npos && safeFolderName(name) == name;
+}
+
+std::string lowerAscii(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+}  // namespace
+
+ProgramManager::ProgramManager(fs::path configFile, fs::path installRoot, Logger log, int maxPrograms,
+                               bool fullAccess, std::shared_ptr<files::FileStore> store)
+    : file_(std::move(configFile)), root_(std::move(installRoot)), log_(std::move(log)), maxPrograms_(maxPrograms),
+      fullAccess_(fullAccess), store_(std::move(store)) {
+    instances_ = root_ / "data" / "instances";
+    logs_ = root_ / "data" / "instance-logs";
+    std::error_code ec;
+    fs::create_directories(instances_, ec);
     std::ifstream in(file_, std::ios::binary);
     const auto j = json::parse(in, nullptr, false);
-    if (j.is_array()) {
-        for (const auto& item : j) {
-            if (!item.is_object()) continue;
-            auto runtime = std::make_shared<Runtime>();
-            runtime->config = ProgramConfig::fromJson(item);
-            if (runtime->config.id.empty()) runtime->config.id = randomId();
-            programs_.push_back(runtime);
+    // 早期版本存的是数组；现在是 {programs, settings}
+    const json items = j.is_array() ? j : j.is_object() ? j.value("programs", json::array()) : json::array();
+    if (j.is_object() && j.contains("settings") && j["settings"].is_object()) {
+        logSettings_.retentionDays = std::clamp(j["settings"].value("log_retention_days", 30), 0, 3650);
+        logSettings_.maxMegabytes = std::clamp(j["settings"].value("log_max_mb", 100), 1, 102400);
+    }
+    for (const auto& item : items) {
+        if (!item.is_object()) continue;
+        auto config = ProgramConfig::fromJson(item);
+        if (config.id.empty()) config.id = randomId();
+        programs_.push_back(makeRuntime(config));
+    }
+    migrateLegacyFolders();
+}
+
+std::shared_ptr<ProgramManager::Runtime> ProgramManager::makeRuntime(const ProgramConfig& config) {
+    auto runtime = std::make_shared<Runtime>();
+    runtime->config = config;
+    runtime->log = std::make_shared<ProgramLog>(logs_ / fromUtf8(config.id), [this] { return logSettings(); });
+    // 上次的输出（崩溃前、重启 CatOfficial 前）载回控制台，再接上落盘
+    const auto previous = runtime->log->tail(64 * 1024);
+    if (!previous.empty()) {
+        runtime->output->append(previous);
+        runtime->output->append("\r\n\x1b[90m[CatOfficial] —— 以上是上次运行的日志 ——\x1b[0m\r\n");
+    }
+    std::weak_ptr<ProgramLog> weakLog = runtime->log;
+    runtime->output->setSink([weakLog](const char* data, std::size_t size) {
+        if (auto log = weakLog.lock()) log->append(data, size);
+    });
+    return runtime;
+}
+
+/// 早期版本的实例目录相对于安装目录（如 dice-suhui）。现在统一放到 data/instances 下：
+/// 目标还不存在、旧目录就在安装目录里时，整个挪过去（同一块盘上的改名，瞬间完成）。
+void ProgramManager::migrateLegacyFolders() {
+    static const std::set<std::string> reserved{"data", "app", "web", "updates", "uploads", ".catofficial"};
+    bool changed = false;
+    std::vector<std::shared_ptr<Runtime>> copy;
+    {
+        std::lock_guard lock(mu_);
+        copy = programs_;
+    }
+    for (const auto& r : copy) {
+        auto& cwd = r->config.cwd;
+        if (cwd.empty()) {
+            cwd = safeFolderName(r->config.name).empty() ? r->config.id : safeFolderName(r->config.name);
+            changed = true;
+            continue;
+        }
+        if (!isPlainFolderName(cwd) || reserved.count(lowerAscii(cwd))) continue;
+        const auto target = instances_ / fromUtf8(cwd);
+        const auto legacy = root_ / fromUtf8(cwd);
+        std::error_code ec;
+        if (fs::exists(target, ec) || !fs::is_directory(legacy, ec)) continue;
+        fs::rename(legacy, target, ec);
+        if (log_) {
+            if (ec) log_(LogLevel::warn, "无法把托管程序「" + r->config.name + "」的目录 " + cwd + " 移到 data/instances 下，请手动移动");
+            else log_(LogLevel::info, "已把托管程序「" + r->config.name + "」的目录 " + cwd + " 移到 data/instances/" + cwd);
         }
     }
+    if (changed) persist();
 }
 
 ProgramManager::~ProgramManager() { stopAll(); }
@@ -366,25 +591,63 @@ std::shared_ptr<ProgramManager::Runtime> ProgramManager::find(const std::string&
 }
 
 void ProgramManager::persist() {
-    json out = json::array();
+    json programs = json::array();
+    json settings;
     {
         std::lock_guard lock(mu_);
-        for (const auto& p : programs_) out.push_back(p->config.toJson());
+        for (const auto& p : programs_) programs.push_back(p->config.toJson());
+        settings = logSettings_.toJson();
     }
     std::error_code ec;
     fs::create_directories(file_.parent_path(), ec);
     const auto temporary = fs::path(file_).concat(".tmp");
     {
         std::ofstream o(temporary, std::ios::binary | std::ios::trunc);
-        o << out.dump(2) << '\n';
+        o << json{{"programs", programs}, {"settings", settings}}.dump(2) << '\n';
     }
     fs::rename(temporary, file_, ec);
 }
 
 fs::path ProgramManager::workingDirectory(const ProgramConfig& config) const {
-    if (config.cwd.empty()) return root_;
     const auto path = fromUtf8(config.cwd);
-    return path.is_absolute() ? path : root_ / path;
+    if (path.is_absolute()) return path;
+    return instances_ / (config.cwd.empty() ? fromUtf8(config.id) : path);
+}
+
+bool ProgramManager::normalizeFolder(ProgramConfig& config, std::string& error) {
+    auto& cwd = config.cwd;
+    const auto first = cwd.find_first_not_of(" \t");
+    cwd = first == std::string::npos ? std::string() : cwd.substr(first, cwd.find_last_not_of(" \t") - first + 1);
+    if (cwd.empty()) {
+        // 没填：按名称起一个，和别的实例撞了就加数字
+        std::string base = safeFolderName(config.name);
+        if (base.empty()) base = config.id;
+        cwd = base;
+        for (int n = 2;; ++n) {
+            bool taken = false;
+            {
+                std::lock_guard lock(mu_);
+                for (const auto& p : programs_)
+                    if (p->config.id != config.id && lowerAscii(p->config.cwd) == lowerAscii(cwd)) taken = true;
+            }
+            if (!taken) break;
+            cwd = base + "-" + std::to_string(n);
+        }
+        return true;
+    }
+    if (fromUtf8(cwd).is_absolute()) {
+        if (!fullAccess_) { error = "实例目录只能填 data/instances 下的文件夹名称；要放到其他位置，请用 --files-full-access 启动"; return false; }
+        return true;
+    }
+    if (!isPlainFolderName(cwd)) {
+        error = fullAccess_ ? "实例目录请填 data/instances 下的文件夹名称，或者完整的绝对路径"
+                            : "实例目录只能填 data/instances 下的文件夹名称（不能包含 / \\ : 等字符）";
+        return false;
+    }
+    std::lock_guard lock(mu_);
+    for (const auto& p : programs_)
+        if (p->config.id != config.id && lowerAscii(p->config.cwd) == lowerAscii(cwd)) { error = "实例目录已被「" + p->config.name + "」使用"; return false; }
+    return true;
 }
 
 json ProgramManager::describe(const std::shared_ptr<Runtime>& r) {
@@ -396,7 +659,22 @@ json ProgramManager::describe(const std::shared_ptr<Runtime>& r) {
     if (r->hasExit) j["exit_code"] = r->exitCode;
     j["error"] = r->error;
     j["output_bytes"] = r->output->total();
-    j["resolved_cwd"] = utf8(workingDirectory(r->config));
+    const auto dir = workingDirectory(r->config);
+    j["resolved_cwd"] = utf8(dir);
+    // 文件管理里打开它用的路径：只开放安装目录时相对安装目录；开放整台机器时是完整路径（Windows 写成 /C:/…）
+    std::error_code ec;
+    std::string filesPath;
+    if (fullAccess_) {
+        const auto generic = dir.generic_u8string();
+        filesPath = std::string(generic.begin(), generic.end());
+        if (filesPath.empty() || filesPath[0] != '/') filesPath = "/" + filesPath;
+    } else {
+        const auto relative = dir.lexically_relative(root_).generic_u8string();
+        const std::string text(relative.begin(), relative.end());
+        if (!text.empty() && text.rfind("..", 0) != 0) filesPath = "/" + text;
+    }
+    j["files_path"] = filesPath;
+    j["folder_exists"] = fs::is_directory(dir, ec);
     return j;
 }
 
@@ -420,17 +698,23 @@ json ProgramManager::save(const json& body, std::string& error) {
     };
     config.name = trim(config.name);
     config.command = trim(config.command);
-    if (config.name.empty()) { error = "请填写程序名称"; return nullptr; }
+    if (config.name.empty()) { error = "请填写实例名称"; return nullptr; }
     if (config.command.empty()) { error = "请填写启动命令"; return nullptr; }
     std::shared_ptr<Runtime> runtime = config.id.empty() ? nullptr : find(config.id);
-    if (!config.id.empty() && !runtime) { error = "没有找到这个程序"; return nullptr; }
+    if (!config.id.empty() && !runtime) { error = "没有找到这个实例"; return nullptr; }
     if (!runtime) {
         std::lock_guard lock(mu_);
         if (programs_.size() >= static_cast<std::size_t>(maxPrograms_))
             { error = maxPrograms_ == 0 ? "不能添加托管程序（启动参数 --max-programs=0）" : "最多托管 " + std::to_string(maxPrograms_) + " 个程序（启动参数 --max-programs）"; return nullptr; }
-        config.id = randomId();
-        runtime = std::make_shared<Runtime>();
-        runtime->config = config;
+    }
+    if (!runtime) config.id = randomId();
+    if (!normalizeFolder(config, error)) return nullptr;
+    std::error_code ec;
+    fs::create_directories(workingDirectory(config), ec);
+    if (ec) { error = "无法创建实例目录"; return nullptr; }
+    if (!runtime) {
+        runtime = makeRuntime(config);
+        std::lock_guard lock(mu_);
         programs_.push_back(runtime);
     } else {
         std::lock_guard lock(runtime->mu);
@@ -440,14 +724,29 @@ json ProgramManager::save(const json& body, std::string& error) {
     return describe(runtime);
 }
 
-bool ProgramManager::remove(const std::string& id, std::string& error) {
+bool ProgramManager::remove(const std::string& id, bool removeFiles, std::string& error) {
     auto runtime = find(id);
-    if (!runtime) { error = "没有找到这个程序"; return false; }
+    if (!runtime) { error = "没有找到这个实例"; return false; }
+    fs::path dir;
     {
         std::lock_guard lock(runtime->mu);
         if (runtime->state == "running" || runtime->state == "stopping") { error = "请先停止程序再删除"; return false; }
         runtime->stopRequested = true;
         ++runtime->generation;   // 取消等待中的自动重启
+        dir = workingDirectory(runtime->config);
+    }
+    if (removeFiles && store_) {
+        // 实例目录与日志一起进回收站（保留 7 天，可还原）
+        std::error_code ec;
+        try {
+            if (fs::exists(dir, ec)) store_->trashReal(dir, "面板");
+            runtime->output->setSink({});
+            runtime->log.reset();
+            if (fs::exists(logs_ / fromUtf8(id), ec)) store_->trashReal(logs_ / fromUtf8(id), "面板");
+        } catch (const files::FileError& e) {
+            error = std::string("移入回收站失败：") + e.what();
+            return false;
+        }
     }
     {
         std::lock_guard lock(mu_);
@@ -455,6 +754,103 @@ bool ProgramManager::remove(const std::string& id, std::string& error) {
     }
     persist();
     return true;
+}
+
+bool ProgramManager::importArchive(const std::string& id, const fs::path& archive, const std::string& fileName,
+                                   const std::string& encoding, std::string& error) {
+    auto runtime = find(id);
+    if (!runtime) { error = "没有找到这个实例"; return false; }
+    fs::path dir;
+    {
+        std::lock_guard lock(runtime->mu);
+        if (runtime->state == "running" || runtime->state == "stopping" || runtime->state == "restarting") { error = "请先停止程序再导入"; return false; }
+        dir = workingDirectory(runtime->config);
+    }
+    const auto lower = lowerAscii(fileName);
+    const bool zip = lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".zip") == 0;
+    const bool tar = (lower.size() > 7 && lower.compare(lower.size() - 7, 7, ".tar.gz") == 0) || (lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".tgz") == 0);
+    if (!zip && !tar) { error = "只支持 .zip、.tar.gz、.tgz 压缩包"; return false; }
+    // 先解到同一块盘上的暂存目录，成功了再换上去：解到一半失败，原来的目录不受影响
+    const auto staging = dir.parent_path() / fromUtf8(".import-" + id);
+    std::error_code ec;
+    fs::remove_all(staging, ec);
+    try {
+        if (zip) files::extractZipTo(archive, staging, encoding, true, 8ULL << 30);
+        else if (!update::extractTarArchive(archive, staging, error)) { fs::remove_all(staging, ec); return false; }
+    } catch (const files::FileError& e) {
+        fs::remove_all(staging, ec);
+        error = e.what();
+        return false;
+    }
+    // 压缩包外面只套了一层文件夹（常见的「Dice/…」打包方式）时去掉这一层
+    fs::path content = staging;
+    {
+        std::vector<fs::path> children;
+        for (const auto& item : fs::directory_iterator(staging, ec)) children.push_back(item.path());
+        if (children.size() == 1 && fs::is_directory(children[0], ec)) content = children[0];
+    }
+    try {
+        if (fs::exists(dir, ec) && !fs::is_empty(dir, ec) && store_) store_->trashReal(dir, "面板");
+        else fs::remove_all(dir, ec);
+    } catch (const files::FileError& e) {
+        fs::remove_all(staging, ec);
+        error = std::string("旧的实例目录移入回收站失败：") + e.what();
+        return false;
+    }
+    fs::create_directories(dir.parent_path(), ec);
+    fs::rename(content, dir, ec);
+    fs::remove_all(staging, ec);
+    if (ec) { error = "替换实例目录失败：没有权限或文件正在使用"; return false; }
+    if (store_) {
+        files::OpRecord op;
+        op.action = "instance-import";
+        op.path = fileName;
+        op.target = utf8(dir);
+        op.actor = "面板";
+        store_->record(op);
+    }
+    runtime->output->append("\r\n\x1b[36m[CatOfficial] 已导入压缩包 " + fileName + "，原来的实例目录已移入回收站\x1b[0m\r\n");
+    if (log_) log_(LogLevel::info, "托管程序「" + runtime->config.name + "」已导入压缩包 " + fileName);
+    return true;
+}
+
+json ProgramManager::logList(const std::string& id) {
+    auto r = find(id);
+    return r && r->log ? r->log->list() : json::array();
+}
+
+fs::path ProgramManager::logFile(const std::string& id, const std::string& name) {
+    auto r = find(id);
+    return r && r->log ? r->log->file(name) : fs::path();
+}
+
+ProgramLogSettings ProgramManager::logSettings() const {
+    std::lock_guard lock(mu_);
+    return logSettings_;
+}
+
+bool ProgramManager::saveLogSettings(const json& body, std::string& error) {
+    const int days = body.value("log_retention_days", logSettings().retentionDays);
+    const int megabytes = body.value("log_max_mb", logSettings().maxMegabytes);
+    if (days < 0 || days > 3650) { error = "日志保存天数应在 0 到 3650 之间（0 表示不按天数删除）"; return false; }
+    if (megabytes < 1 || megabytes > 102400) { error = "每个实例的日志上限应在 1 到 102400 MB 之间"; return false; }
+    {
+        std::lock_guard lock(mu_);
+        logSettings_.retentionDays = days;
+        logSettings_.maxMegabytes = megabytes;
+    }
+    persist();
+    pruneLogs();
+    return true;
+}
+
+void ProgramManager::pruneLogs() {
+    std::vector<std::shared_ptr<Runtime>> copy;
+    {
+        std::lock_guard lock(mu_);
+        copy = programs_;
+    }
+    for (const auto& r : copy) if (r->log) r->log->prune();
 }
 
 bool ProgramManager::launch(const std::shared_ptr<Runtime>& r, std::string& error) {

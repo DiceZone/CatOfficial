@@ -40,7 +40,8 @@ const PAGES: Record<string, React.FC> = {
 };
 
 function readPath(): string {
-  const path = window.location.hash.replace(/^#/, '') || '/';
+  // #/files?path=/data/instances/x 这类带参数的地址：页面按问号前面的部分认
+  const path = window.location.hash.replace(/^#/, '').split('?')[0] || '/';
   return path in PAGES ? path : '/';
 }
 

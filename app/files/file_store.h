@@ -131,6 +131,9 @@ public:
     std::shared_ptr<Job> startJob(const std::string& kind, std::function<void(Job&)> work);
     std::shared_ptr<Job> job(const std::string& id);
 
+    /// 把一个真实路径整个移进回收站（程序托管导入压缩包、删除实例目录时用；调用方负责确认路径可以动）。
+    TrashEntry trashReal(const fs::path& real, const std::string& by) { return moveToTrash(real, by); }
+
     /// 虚拟路径 → 真实路径（越界抛 FileError）。也供终端设置工作目录使用。
     fs::path resolve(const std::string& path, bool allowRoot = true) const;
 
@@ -156,6 +159,12 @@ private:
     std::mutex jobsMu_;
     std::map<std::string, std::shared_ptr<Job>> jobs_;
 };
+
+/// 把 zip 解到 @p destination（真实路径）：防 zip slip、总体积不超过 @p limit。
+/// 置了 UTF-8 标志位的条目按 UTF-8；其余按 @p encoding（utf8 / gbk）。
+void extractZipTo(const fs::path& archive, const fs::path& destination, const std::string& encoding, bool overwrite,
+                  std::uint64_t limit, const Progress& progress = {},
+                  const std::function<void(const fs::path&)>& guard = {});
 
 /// 面板操作的入口：body 是 {action, path, target, ...}，返回响应 JSON；出错抛 FileError。
 json handleAction(FileStore& store, const json& body, const std::string& actor, const std::string& ip);
