@@ -6,10 +6,15 @@
 #include "../app/relay.h"
 #include "../app/replies.h"
 #include "../app/store.h"
+#include "../app/update/update_service.h"
+#include "../app/platform/update_schedule.h"
+#include "../app/platform/instance_guard.h"
 
 #include <catofficial/bot.h>
 
 #include <cstdio>
+#include <ctime>
+#include <fstream>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -451,6 +456,68 @@ TEST(TrayTextIsTrimmedAndLimited) {
     threw = false;
     try { parseConfig(json{{"tray", json{{"text", "a\nb"}}}}); } catch (const std::exception&) { threw = true; }
     CHECK(threw);
+}
+
+TEST(UpdateManifestIsValidatedStrictly) {
+    namespace up = update;
+    const std::string sha(64, 'a');
+    json manifest{{"schema", 1}, {"repository", "DiceZone/CatOfficial"}, {"tag", "v0.1.0-beta.3"}, {"version", "0.1.0"}, {"build", 3},
+                  {"release_notes", "### 新功能\n- 在线更新"},
+                  {"assets", json::array({json{{"os", "windows"}, {"arch", "amd64"}, {"name", "CatOfficial-0.1.0-beta.3-windows-amd64.zip"}, {"sha256", sha}, {"size", 100}},
+                                          json{{"os", "linux"}, {"arch", "arm64"}, {"name", "CatOfficial-0.1.0-beta.3-linux-arm64.tar.gz"}, {"sha256", sha}, {"size", 100}}})}};
+    up::ReleaseManifest parsed;
+    std::string error;
+    CHECK(up::parseReleaseManifest(manifest.dump(), parsed, error));
+    CHECK_EQ(parsed.build, 3);
+    CHECK_EQ(parsed.releaseUrl, std::string("https://github.com/DiceZone/CatOfficial/releases/tag/v0.1.0-beta.3"));
+    CHECK(up::selectAsset(parsed, "windows", "amd64") != nullptr);
+    CHECK(up::selectAsset(parsed, "macos", "arm64") == nullptr);
+
+    auto bad = manifest; bad["repository"] = "someone/else";
+    CHECK(!up::parseReleaseManifest(bad.dump(), parsed, error));
+    bad = manifest; bad["tag"] = "v0.1.0-beta.4";               // 标签与构建号对不上
+    CHECK(!up::parseReleaseManifest(bad.dump(), parsed, error));
+    bad = manifest; bad["assets"][0]["name"] = "../evil.zip";
+    CHECK(!up::parseReleaseManifest(bad.dump(), parsed, error));
+    bad = manifest; bad["assets"][1]["os"] = "windows"; bad["assets"][1]["arch"] = "amd64";   // 同一平台两个包
+    CHECK(!up::parseReleaseManifest(bad.dump(), parsed, error));
+    bad = manifest; bad["assets"][0]["sha256"] = "xyz";
+    CHECK(!up::parseReleaseManifest(bad.dump(), parsed, error));
+}
+
+TEST(UpdateVersionsAndArchivePaths) {
+    namespace up = update;
+    CHECK_EQ(up::compareRelease("0.1.0", 1, "0.1.0", 2), -1);
+    CHECK_EQ(up::compareRelease("0.2.0", 0, "0.1.0", 9), 1);
+    CHECK_EQ(up::compareRelease("0.1.0", 2, "0.1.0", 2), 0);
+    CHECK(up::archiveEntrySafe("CatOfficial-beta/app/catofficial-core.exe"));
+    CHECK(!up::archiveEntrySafe("../catofficial.exe"));
+    CHECK(!up::archiveEntrySafe("/etc/passwd"));
+    CHECK(!up::archiveEntrySafe("C:\\Windows\\x.dll"));
+    CHECK(!up::archiveEntrySafe("a/../../b"));
+    CHECK_EQ(up::buildMirroredUrl("https://github.com/x", "https://m.example/"), std::string("https://m.example/https://github.com/x"));
+    // 2026-11-22 00:00 UTC，服务器在 UTC+8 时 04:00 的下一次安装时间是当天北京时间 04:00。
+    const std::int64_t midnight = 1795305600;
+    CHECK_EQ(up::nextInstallTime(midnight, 480, "04:00"), midnight + 20 * 3600);
+    CHECK(!up::validInstallTime("24:00"));
+    CHECK(up::releaseNotesPreview("### 新功能\n\n- **app**：在线更新\n\n## 下载\n| a |").find("下载") == std::string::npos);
+}
+
+TEST(WindowsPackageNeedsLauncherCoreAndRuntime) {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / ("catofficial-pkg-test-" + std::to_string(std::time(nullptr)));
+    fs::create_directories(dir / "app");
+    fs::create_directories(dir / "web");
+    CHECK(!update::missingWindowsPackageComponents(dir).empty());
+    for (const char* file : {"catofficial.exe", "app/catofficial-core.exe", "app/msvcp140.dll", "app/vcruntime140.dll", "app/vcruntime140_1.dll", "web/index.html"})
+        std::ofstream(dir / file) << "x";
+    CHECK(update::missingWindowsPackageComponents(dir).empty());
+    fs::remove_all(dir);
+}
+
+TEST(PortProbeSeesAnotherListener) {
+    // 随便挑一个大概率空闲的端口：没人监听时不算占用。
+    CHECK(!portInUse(1, "127.0.0.1"));
 }
 
 }  // namespace

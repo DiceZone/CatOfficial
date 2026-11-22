@@ -6,10 +6,13 @@
 #include "hub.h"
 #include "logbuf.h"
 #include "paths.h"
+#include "platform/instance_guard.h"
+#include "platform/startup_guard.h"
 #include "platform/tray_win.h"
 #include "server.h"
 #include "store.h"
 #include "webui.h"
+#include "update/update_service.h"
 
 #include <curl/curl.h>
 #include <drogon/drogon.h>
@@ -29,6 +32,7 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include "platform/posix_update.h"
 #endif
 
 namespace {
@@ -63,27 +67,54 @@ catofficial::Logger makeLogger() {
     };
 }
 
-/// 面板请求重启：等端口释放后以相同参数重新启动自己。
-void relaunch(char** argv, const std::filesystem::path& configPath) {
+/// 是否由启动器 / 管理程序拉起（发行包里正常双击 catofficial 就是这样）。
+bool managedLaunch() {
+#ifdef _WIN32
+    wchar_t managed[8]{};
+    const DWORD length = GetEnvironmentVariableW(L"CATOFFICIAL_MANAGED", managed, 8);
+    std::error_code ec;
+    return length > 0 && std::wstring(managed) == L"1" && std::filesystem::is_regular_file("catofficial.exe", ec);
+#else
+    return catofficial::app::update::posix::managedLaunch(std::filesystem::current_path());
+#endif
+}
+
+/// 重启（面板「重启」或安装更新）。由启动器拉起时交给启动器：Windows 拉起
+/// 「catofficial.exe --after <本进程 PID>」，它等本进程退出、安装待装的更新后再拉起新 core；
+/// POSIX 以退出码 42 结束，由前台管理程序接手。开发时直接运行 core 则重新启动自己。
+/// 返回 main 应使用的退出码。
+int relaunch(char** argv, const std::filesystem::path& configPath, int argc) {
 #ifdef _WIN32
     (void)argv;
-    wchar_t exe[MAX_PATH];
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    // 当前目录已切到程序所在目录，配置文件改用绝对路径传下去。
-    std::wstring command = L"\"" + std::wstring(exe) + L"\" \"" + configPath.wstring() + L"\"";
+    std::wstring command;
+    std::wstring exe;
+    if (managedLaunch()) {
+        exe = std::filesystem::absolute("catofficial.exe").wstring();
+        command = L"\"" + exe + L"\" --after " + std::to_wstring(GetCurrentProcessId());
+        if (argc > 1) command += L" \"" + configPath.wstring() + L"\"";
+    } else {
+        wchar_t self[MAX_PATH];
+        GetModuleFileNameW(nullptr, self, MAX_PATH);
+        exe = self;
+        // 当前目录可能已切换，配置文件改用绝对路径传下去。
+        command = L"\"" + exe + L"\" \"" + configPath.wstring() + L"\"";
+        SetEnvironmentVariableW(L"CATOFFICIAL_RESTARTED", L"1");
+    }
     std::vector<wchar_t> buffer(command.begin(), command.end());
     buffer.push_back(L'\0');
-    SetEnvironmentVariableW(L"CATOFFICIAL_RESTARTED", L"1");
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    if (CreateProcessW(exe, buffer.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    if (CreateProcessW(exe.c_str(), buffer.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
         CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
     }
+    return 0;
 #else
-    (void)configPath;
+    (void)configPath; (void)argc;
+    if (managedLaunch()) return catofficial::app::update::posix::kRestartExitCode;
     setenv("CATOFFICIAL_RESTARTED", "1", 1);
     execv("/proc/self/exe", argv);
     execvp(argv[0], argv);
+    return 1;
 #endif
 }
 
@@ -101,16 +132,11 @@ int main(int argc, char** argv) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     ix::initNetSystem();
     std::error_code ec;
-    // 命令行给的路径按启动时的当前目录解析；之后在 Windows 上切到程序所在目录，
-    // 这样双击、开机自启动（当前目录是 System32）都读写程序旁边的 config.json 与 data。
+    // 命令行给的路径按启动时的当前目录解析；之后在 Windows 上切到安装目录（与 Dice!Next 相同：
+    // 发行包里是 app\ 的上一级），这样双击、开机自启动（当前目录是 System32）都读写安装目录里的
+    // config.json 与 data。在临时目录（压缩包预览）里运行时拒绝启动。
     fs::path configPath = argc > 1 ? fs::absolute(fromUtf8(argv[1]), ec) : fs::path();
-#ifdef _WIN32
-    {
-        wchar_t exe[MAX_PATH];
-        const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        if (n > 0 && n < MAX_PATH) fs::current_path(fs::path(std::wstring(exe, n)).parent_path(), ec);
-    }
-#endif
+    if (!startup::prepareCoreLaunch()) return 2;
     if (configPath.empty()) configPath = fs::absolute("config.json", ec);
     if (!fs::exists(configPath)) {
         std::ofstream(configPath, std::ios::binary) << kConfigTemplate;
@@ -134,6 +160,26 @@ int main(int argc, char** argv) {
     // 数据目录固定为配置文件旁的 data。
     const fs::path dataDir = configPath.parent_path() / "data";
     fs::create_directories(dataDir, ec);
+
+    // 单实例：同一套数据（同一 data 目录）只允许一个进程运行。
+    if (!acquireInstanceLock(utf8(dataDir / ".instance.lock"))) {
+        std::cerr << "\n[CatOfficial] 检测到同一套数据已有实例在运行（数据目录：" << utf8(dataDir)
+                  << "）。\n  同一套数据不能同时运行多个进程。\n  若确认没有其他实例，请删除 "
+                  << utf8(dataDir / ".instance.lock") << " 后重试。\n" << std::endl;
+        return 1;
+    }
+    // 面板端口被占用时自动顺延到下一个空闲端口，并写回配置文件。
+    if (config.webuiEnabled && portInUse(config.webuiPort, config.webuiHost)) {
+        const uint16_t want = config.webuiPort;
+        const uint16_t got = findAvailablePort(want);
+        if (got != want && !portInUse(got, config.webuiHost)) {
+            config.webuiPort = got;
+            WebUi::saveWebuiPort(configPath, got);
+            log(catofficial::LogLevel::warn, "面板端口 " + std::to_string(want) + " 已被占用，自动改用 " + std::to_string(got) + " 并写入配置文件");
+        } else {
+            log(catofficial::LogLevel::error, "面板端口 " + std::to_string(want) + " 已被占用，附近也没有空闲端口");
+        }
+    }
 
     std::shared_ptr<Store> store;
     try {
@@ -174,6 +220,19 @@ int main(int argc, char** argv) {
             log(catofficial::LogLevel::warn, "管理面板监听在 " + config.webuiHost + "，其他机器也能访问，请使用足够强的密码");
     }
 
+    // 在线更新：检查、下载、校验在后台线程；安装交给启动器。
+    auto updater = std::make_shared<update::UpdateService>(dataDir / "update.json", log,
+        [] {
+            WebUi::restartRequested() = true;
+            drogon::app().getLoop()->queueInLoop([] { drogon::app().quit(); });
+        },
+        [weakHub = std::weak_ptr<Hub>(hub)](const std::string& event, const std::string& message) {
+            if (auto h = weakHub.lock()) h->announce(event == "update_available" ? "CatOfficial 有新版本" : "CatOfficial 在线更新", message);
+        });
+    WebUi::setUpdater(updater);
+    drogon::app().getLoop()->runAfter(20.0, [updater] { updater->tick(); });
+    drogon::app().getLoop()->runEvery(60.0, [updater] { updater->tick(); });
+
     drogon::app().setLogLevel(trantor::Logger::kWarn).setThreadNum(2);
     drogon::app().getLoop()->queueInLoop([hub] {
         hub->start();
@@ -186,12 +245,14 @@ int main(int argc, char** argv) {
 
     drogon::app().run();
     stopSystemTray();
+    WebUi::setUpdater(nullptr);
+    updater.reset();
     hub->stop();
     ImageCache::get().stop();
     curl_global_cleanup();
     if (WebUi::restartRequested()) {
         log(catofficial::LogLevel::info, "正在重启");
-        relaunch(argv, configPath);
+        return relaunch(argv, configPath, argc);
     }
     return 0;
 }

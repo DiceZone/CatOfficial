@@ -34,6 +34,19 @@ namespace catofficial::app {
 
 class Hub : public std::enable_shared_from_this<Hub> {
 public:
+    /// 写一条运行日志（面板「运行日志」与控制台）。
+    void log(LogLevel level, const std::string& message) const { say(level, message); }
+    /// 程序事件通知（如在线更新）：按设置发邮件，并私聊各官方机器人的主人。
+    void announce(const std::string& subject, const std::string& body) {
+        say(LogLevel::info, subject + "：" + body.substr(0, body.find('\n')));
+        const auto cfg = config();
+        if (cfg.smtp.notifyErrors && mailer_) mailer_->notifyAll(subject, body);
+        if (!cfg.notifyMasters) return;
+        const auto running = relays();
+        for (const auto& m : cfg.masters)
+            for (const auto& r : running)
+                if (r->id() == m.botId && r->bot()->online()) r->sendPrivateText(m.openId, body);
+    }
     using json = nlohmann::json;
     using Sink = std::function<void(const json& event)>;
 

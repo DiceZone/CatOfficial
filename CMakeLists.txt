@@ -30,6 +30,7 @@ if(CATOFFICIAL_BUILD_APP OR CATOFFICIAL_BUILD_TESTS)
     find_package(unofficial-sqlite3 CONFIG REQUIRED)
     find_package(CURL CONFIG REQUIRED)
     find_package(ixwebsocket CONFIG REQUIRED)
+    find_package(ZLIB REQUIRED)
 
     # 版本号：发布时 CI 传入 -DCATOFFICIAL_BUILD=N，显示为 0.1.0-beta.N；本地编译为 0，显示 0.1.0。
     set(CATOFFICIAL_BUILD 0 CACHE STRING "Release build number (0 for local builds)")
@@ -44,22 +45,43 @@ if(CATOFFICIAL_BUILD_APP OR CATOFFICIAL_BUILD_TESTS)
     target_include_directories(catofficial_app_deps INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_link_libraries(catofficial_app_deps INTERFACE
         catofficial::core Drogon::Drogon nlohmann_json::nlohmann_json
-        OpenSSL::SSL OpenSSL::Crypto unofficial::sqlite3::sqlite3 CURL::libcurl ixwebsocket::ixwebsocket)
+        OpenSSL::SSL OpenSSL::Crypto unofficial::sqlite3::sqlite3 CURL::libcurl ixwebsocket::ixwebsocket ZLIB::ZLIB)
+
+    # 在线更新（检查、下载、校验、解压）；POSIX 用自带的 tar.gz 读取器，Windows 用系统的 tar.exe。
+    set(CATOFFICIAL_UPDATE_SOURCES app/update/update_service.cpp app/update/update_archive.cpp app/platform/system_info.cpp)
 endif()
 
 if(CATOFFICIAL_BUILD_APP)
-    add_executable(catofficial app/main.cpp app/platform/system_info.cpp)
-    target_link_libraries(catofficial PRIVATE catofficial_app_deps)
+    # 主程序（core）：Windows 发行包里放在 app\ 下，与全部 DLL 同目录。
+    add_executable(catofficial-core app/main.cpp ${CATOFFICIAL_UPDATE_SOURCES})
+    target_link_libraries(catofficial-core PRIVATE catofficial_app_deps)
+
+    # 启动器 / 管理程序（与 Dice!Next 的 dice-next 相同）：处理待安装的更新再拉起 core。
+    # Windows 上静态链接运行库（/MT）、只依赖系统 DLL，所以能在 app\ 的依赖加载之前运行；
+    # POSIX 上是前台管理程序，core 以退出码 42 请求重启时由它安装更新并重新拉起。
+    if(WIN32)
+        add_executable(catofficial-launcher app/launcher/launcher_win.cpp)
+        set_property(TARGET catofficial-launcher PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        target_link_libraries(catofficial-launcher PRIVATE shell32 user32)
+    else()
+        add_executable(catofficial-launcher app/launcher/launcher_posix.cpp)
+        target_link_libraries(catofficial-launcher PRIVATE nlohmann_json::nlohmann_json)
+    endif()
+    set_target_properties(catofficial-launcher PROPERTIES OUTPUT_NAME catofficial)
+    target_include_directories(catofficial-launcher PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
     if(WIN32)
         # 程序图标（托盘也用它）与版本信息。
         enable_language(RC)
-        target_sources(catofficial PRIVATE app/resources/app.rc app/resources/version.rc)
+        target_sources(catofficial-core PRIVATE app/resources/app.rc app/resources/version.rc)
+        target_compile_definitions(catofficial-core PRIVATE CATOFFICIAL_RC_CORE=1)
+        target_sources(catofficial-launcher PRIVATE app/resources/app.rc app/resources/version.rc)
     endif()
 endif()
 
 if(CATOFFICIAL_BUILD_TESTS)
     enable_testing()
-    add_executable(catofficial-tests tests/test_main.cpp app/platform/system_info.cpp)
+    add_executable(catofficial-tests tests/test_main.cpp ${CATOFFICIAL_UPDATE_SOURCES})
     target_link_libraries(catofficial-tests PRIVATE catofficial_app_deps)
     add_test(NAME catofficial-tests COMMAND catofficial-tests)
 endif()

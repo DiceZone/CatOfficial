@@ -1,4 +1,4 @@
-// Version resource for catofficial.exe.
+// Version resource for catofficial.exe (launcher) and catofficial-core.exe.
 // The numbers come from the generated catofficial_version.h, so the file
 // properties Windows shows match the version the program prints.
 // Keep this file pure ASCII: rc.exe is not compiled with /utf-8.
@@ -20,11 +20,20 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName",      "DiceZone"
+#ifdef CATOFFICIAL_RC_CORE
+            VALUE "FileDescription",  "CatOfficial Core"
+#else
             VALUE "FileDescription",  "CatOfficial"
+#endif
             VALUE "FileVersion",      CATOFFICIAL_VERSION_STRING
+#ifdef CATOFFICIAL_RC_CORE
+            VALUE "InternalName",     "catofficial-core"
+            VALUE "OriginalFilename", "catofficial-core.exe"
+#else
             VALUE "InternalName",     "catofficial"
-            VALUE "LegalCopyright",   "Copyright (C) 2026 DiceZone. Licensed under AGPL-3.0-only."
             VALUE "OriginalFilename", "catofficial.exe"
+#endif
+            VALUE "LegalCopyright",   "Copyright (C) 2026 DiceZone. Licensed under AGPL-3.0-only."
             VALUE "ProductName",      "CatOfficial"
             VALUE "ProductVersion",   CATOFFICIAL_VERSION_STRING
         END

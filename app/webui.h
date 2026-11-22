@@ -11,6 +11,7 @@
 #include "paths.h"
 #include "server.h"
 #include "platform/tray_win.h"
+#include "update/update_service.h"
 
 #include <catofficial/qrlogin.h>
 
@@ -58,8 +59,25 @@ public:
         if (!raw.is_object()) return false;
         config.webuiPassword = randomHex(6);
         raw["webui"]["password"] = config.webuiPassword;
+        raw["webui"]["must_change_password"] = true;
+        config.webuiMustChangePassword = true;
         saved = writeJson(configPath, migrateConfig(raw));
         return true;
+    }
+
+    /// 在线更新服务（main 创建；退出前置空）。
+    static void setUpdater(std::shared_ptr<update::UpdateService> updater) {
+        std::lock_guard lock(updaterMutex());
+        updaterSlot() = std::move(updater);
+    }
+
+    /// 启动时改写配置文件里的面板端口（端口被占用时顺延）。
+    static bool saveWebuiPort(const std::filesystem::path& configPath, uint16_t port) {
+        json raw;
+        { std::ifstream in(configPath, std::ios::binary); raw = json::parse(in, nullptr, false); }
+        if (!raw.is_object()) return false;
+        raw["webui"]["port"] = port;
+        return writeJson(configPath, raw);
     }
 
     static void setup(std::filesystem::path configPath, std::filesystem::path dataDir, std::shared_ptr<Hub> hub) {
@@ -99,7 +117,44 @@ public:
             cb(resp);
         });
         route("/api/webui/session", drogon::Get, false, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
-            cb(jsonResponse(200, json{{"authenticated", authenticated(req)}}));
+            const bool ok = authenticated(req);
+            cb(jsonResponse(200, json{{"authenticated", ok}, {"must_change_password", ok && state().hub->config().webuiMustChangePassword}}));
+        });
+        // 在线更新（与 Dice!Next 的 /api/system/update 相同的状态与动作）。
+        route("/api/webui/update", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
+            auto updater = currentUpdater();
+            cb(updater ? jsonResponse(200, updater->status()) : jsonResponse(503, json{{"error", "在线更新不可用"}}));
+        });
+        route("/api/webui/update", drogon::Put, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto updater = currentUpdater();
+            if (!updater) { cb(jsonResponse(503, json{{"error", "在线更新不可用"}})); return; }
+            std::string error;
+            if (!updater->updateSettings(body, error)) { cb(jsonResponse(400, json{{"error", error}})); return; }
+            cb(jsonResponse(200, updater->status()));
+        });
+        route("/api/webui/update/{action}", drogon::Post, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
+            auto updater = currentUpdater();
+            if (!updater) { cb(jsonResponse(503, json{{"error", "在线更新不可用"}})); return; }
+            const auto action = param(req);
+            std::string error;
+            bool ok = false;
+            if (action == "check") ok = updater->requestCheck(true, error);
+            else if (action == "download") ok = updater->requestDownload(error);
+            else if (action == "install") ok = updater->requestInstall(error);
+            else if (action == "cancel") ok = updater->requestCancelDownload(error);
+            else { cb(jsonResponse(404, json{{"error", "未知的操作"}})); return; }
+            if (!ok) { cb(jsonResponse(409, json{{"error", error}})); return; }
+            cb(jsonResponse(200, updater->status()));
+        });
+        // 首次登录强制修改自动生成的密码。
+        route("/api/webui/password", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            const auto password = body.value("password", std::string());
+            if (password.size() < 6) { cb(jsonResponse(400, json{{"error", "面板密码至少 6 位"}})); return; }
+            if (password == state().hub->config().webuiPassword) { cb(jsonResponse(400, json{{"error", "新密码不能与当前密码相同"}})); return; }
+            auto config = fileConfig();
+            config["webui"]["password"] = password;
+            config["webui"].erase("must_change_password");
+            cb(commit(config));
         });
         route("/api/webui/status", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) { cb(jsonResponse(200, status())); });
         route("/api/webui/restart", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
@@ -291,6 +346,9 @@ private:
         std::time_t startedAt = std::time(nullptr);
     };
     static State& state() { static State s; return s; }
+    static std::mutex& updaterMutex() { static std::mutex m; return m; }
+    static std::shared_ptr<update::UpdateService>& updaterSlot() { static std::shared_ptr<update::UpdateService> u; return u; }
+    static std::shared_ptr<update::UpdateService> currentUpdater() { std::lock_guard lock(updaterMutex()); return updaterSlot(); }
 
     using Handler = std::function<void(const drogon::HttpRequestPtr&, const json&, Callback&&)>;
 
@@ -381,6 +439,10 @@ private:
     static void serve(const Handler& handler, bool needAuth, const drogon::HttpRequestPtr& req, Callback&& cb) {
         if (!onPanel(req)) { cb(notFound()); return; }
         if (needAuth && !authenticated(req)) { cb(jsonResponse(401, json{{"error", "请先登录"}})); return; }
+        if (needAuth && state().hub->config().webuiMustChangePassword && req->path() != "/api/webui/password") {
+            cb(jsonResponse(403, json{{"error", "请先修改面板密码"}, {"must_change_password", true}}));
+            return;
+        }
         json body = json::object();
         if (!req->getBody().empty()) {
             body = json::parse(req->getBody(), nullptr, false);
@@ -614,11 +676,13 @@ private:
             const auto password = config.value("webui", json::object()).value("password", std::string());
             config["webui"] = body["webui"];
             config["webui"]["password"] = password;
+            if (const bool must = fileConfig().value("webui", json::object()).value("must_change_password", false)) config["webui"]["must_change_password"] = must;
         }
         const auto newPassword = body.value("new_password", std::string());
         if (!newPassword.empty()) {
             if (newPassword.size() < 6) return jsonResponse(400, json{{"error", "面板密码至少 6 位"}});
             config["webui"]["password"] = newPassword;
+            config["webui"].erase("must_change_password");
         }
         if (body.contains("masters") && body["masters"].is_array())
             for (const auto& m : body["masters"])

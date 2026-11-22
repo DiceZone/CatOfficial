@@ -109,6 +109,7 @@ struct Config {
     std::string webuiHost = "127.0.0.1";
     uint16_t webuiPort = 18082;
     std::string webuiPassword;          // 为空时首次启动自动生成并写回配置文件
+    bool webuiMustChangePassword = false;  // 自动生成的密码：登录后必须先改成自己的密码
     std::string webuiRoot = "web";      // 前端文件目录，相对配置文件所在目录
 
     std::string logLevel = "info";
@@ -310,6 +311,7 @@ inline Config parseConfig(const nlohmann::json& input) {
     c.webuiHost = webui.value("host", c.webuiHost);
     c.webuiPort = webui.value("port", c.webuiPort);
     c.webuiPassword = webui.value("password", std::string());
+    c.webuiMustChangePassword = webui.value("must_change_password", false);
     c.webuiRoot = webui.value("root", c.webuiRoot);
     if (c.webuiEnabled && c.webuiPort == 0) throw std::runtime_error("webui.port 不能为 0");
     for (const auto& b : c.bots)

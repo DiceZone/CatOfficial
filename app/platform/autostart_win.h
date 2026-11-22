@@ -13,9 +13,21 @@ namespace catofficial::app {
 
 inline const wchar_t* autostartName() { return L"CatOfficial"; }
 
+/// 开机自启动登记的程序：发行包里是安装目录的启动器 catofficial.exe（它会先安装待装的更新再拉起 app\ 里的 core），
+/// 开发时直接运行 core 则登记 core 自己。
 inline std::wstring exePathW() {
     wchar_t buf[MAX_PATH]; DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    return std::wstring(buf, n);
+    std::wstring self(buf, n);
+    const auto slash = self.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) {
+        const auto dir = self.substr(0, slash);
+        const auto parentSlash = dir.find_last_of(L"\\/");
+        if (parentSlash != std::wstring::npos && _wcsicmp(dir.c_str() + parentSlash + 1, L"app") == 0) {
+            const auto launcher = dir.substr(0, parentSlash) + L"\\catofficial.exe";
+            if (GetFileAttributesW(launcher.c_str()) != INVALID_FILE_ATTRIBUTES) return launcher;
+        }
+    }
+    return self;
 }
 
 inline bool isAutostartEnabled() {

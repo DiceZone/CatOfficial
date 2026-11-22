@@ -9,6 +9,7 @@
     "nlohmann-json",
     "openssl",
     "sqlite3",
+    "zlib",
     {
       "name": "curl",
       "features": [

@@ -84,9 +84,15 @@ namespace tray_detail {
                 DestroyMenu(menu);
                 switch (cmd) {
                     case ID_DIR: {
-                        wchar_t buf[MAX_PATH]; GetModuleFileNameW(nullptr, buf, MAX_PATH);
-                        std::wstring p(buf); auto s = p.find_last_of(L"\\/");
-                        if (s != std::wstring::npos) p = p.substr(0, s);
+                        // 安装目录（core 启动时已切换到这里；发行包里是 app\ 的上一级）。
+                        wchar_t buf[MAX_PATH]{};
+                        const DWORD n = GetCurrentDirectoryW(MAX_PATH, buf);
+                        std::wstring p(buf, n);
+                        if (p.empty()) {
+                            GetModuleFileNameW(nullptr, buf, MAX_PATH);
+                            p = buf;
+                            if (auto s = p.find_last_of(L"\\/"); s != std::wstring::npos) p = p.substr(0, s);
+                        }
                         ShellExecuteW(nullptr, L"open", p.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                         break;
                     }

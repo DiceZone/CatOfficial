@@ -9,6 +9,7 @@
 // drogon 只负责管理面板、头像跳转与官方 Webhook 入口。
 
 #include "hub.h"
+#include "platform/instance_guard.h"
 
 #include <drogon/WebSocketClient.h>
 #include <drogon/drogon.h>
@@ -172,6 +173,7 @@ public:
                 if (auto self = weak.lock()) self->onMessage(socket, state, msg);
             });
         });
+        if (portInUse(c.port, c.host)) { error = "端口 " + std::to_string(c.port) + " 已被其他程序占用"; server_.reset(); return false; }
         const auto result = server_->listen();
         if (!result.first) { error = result.second; server_.reset(); return false; }
         server_->start();
@@ -233,6 +235,7 @@ public:
             if (!self) return std::make_shared<ix::HttpResponse>(503, "Service Unavailable", ix::HttpErrorCode::Ok, ix::WebSocketHttpHeaders{}, "");
             return self->handle(*request);
         });
+        if (portInUse(c.port, c.host)) { error = "端口 " + std::to_string(c.port) + " 已被其他程序占用"; server_.reset(); return false; }
         const auto result = server_->listen();
         if (!result.first) { error = result.second; server_.reset(); return false; }
         server_->start();
@@ -405,7 +408,12 @@ public:
     static void setup(std::shared_ptr<Hub> h) {
         hub() = std::move(h);
         const auto cfg = hub()->config();
-        if (cfg.webhookStandalone) drogon::app().addListener(cfg.webhookHost, cfg.webhookPort);
+        if (cfg.webhookStandalone) {
+            if (portInUse(cfg.webhookPort, cfg.webhookHost))
+                hub()->log(catofficial::LogLevel::error, "Webhook 独立端口 " + std::to_string(cfg.webhookPort) + " 已被其他程序占用，Webhook 入口未启动");
+            else
+                drogon::app().addListener(cfg.webhookHost, cfg.webhookPort);
+        }
         drogon::app().registerHandler("/{file}",
             [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback, const std::string& file) {
                 if (panelFile() && panelPort() && req->getLocalAddr().toPort() == panelPort()) { callback(panelFile()(file)); return; }

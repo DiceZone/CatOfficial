@@ -6,6 +6,7 @@
 //   · 正向：CatOfficial 连 NapCat 的 WebSocket 服务端。
 
 #include "config.h"
+#include "platform/instance_guard.h"
 
 #include <catofficial/log.h>
 
@@ -135,7 +136,9 @@ private:
                 }
             });
         });
-        const auto result = server_->listen();
+        // Windows 上 SO_REUSEADDR 让两个进程能同时绑同一端口，先探测有没有人在监听。
+        const auto result = portInUse(config_.port, config_.host)
+            ? std::pair<bool, std::string>{false, "端口已被其他程序占用"} : server_->listen();
         if (!result.first) {
             listening_ = false;
             setError("无法监听 " + config_.host + ":" + std::to_string(config_.port) + "：" + result.second);
