@@ -3,6 +3,7 @@
 #include "../app/bind.h"
 #include "../app/config.h"
 #include "../app/onebot.h"
+#include "../app/options.h"
 #include "../app/relay.h"
 #include "../app/replies.h"
 #include "../app/store.h"
@@ -23,6 +24,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <map>
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -608,6 +610,36 @@ TEST(ProgramCommandFindsExecutablesInItsWorkingDirectory) {
     // 不在工作目录里的（java、python 之类）原样交给系统去 PATH 里找
     CHECK_EQ(terminal::resolveProgramCommand("java -jar Dice.jar", dir), std::string("java -jar Dice.jar"));
     fs::remove_all(dir.parent_path());
+}
+
+TEST(OptionsComeFromArgumentsOrEnvironment) {
+    std::map<std::string, std::string> env;
+    auto read = [&env](const char* name) { const auto it = env.find(name); return it == env.end() ? std::string() : it->second; };
+    // 默认值
+    auto o = parseOptions({}, read);
+    CHECK(!o.disableFiles && !o.disableTerminal && !o.disablePrograms && !o.container && !o.filesFullAccess);
+    CHECK_EQ(o.maxPrograms, 32);
+    CHECK(o.errors.empty());
+    // 环境变量注入
+    env = {{"CATOFFICIAL_DISABLE_FILES", "1"}, {"CATOFFICIAL_DISABLE_TERMINAL", "true"}, {"CATOFFICIAL_DISABLE_PROGRAMS", "Yes"},
+           {"CATOFFICIAL_CONTAINER", "on"}, {"CATOFFICIAL_MAX_PROGRAMS", "4"}, {"CATOFFICIAL_CONFIG", "conf/希亚.json"},
+           {"CATOFFICIAL_FILES_FULL_ACCESS", "0"}};
+    o = parseOptions({}, read);
+    CHECK(o.disableFiles && o.disableTerminal && o.disablePrograms && o.container && !o.filesFullAccess);
+    CHECK_EQ(o.maxPrograms, 4);
+    CHECK_EQ(o.config, std::string("conf/希亚.json"));
+    // 命令行覆盖带值的参数；两种写法都认；开关原样记下，重启时带上
+    o = parseOptions({"--max-programs=7", "other.json", "--files-full-access"}, read);
+    CHECK_EQ(o.maxPrograms, 7);
+    CHECK_EQ(o.config, std::string("other.json"));
+    CHECK(o.filesFullAccess);
+    CHECK_EQ(o.flags.size(), std::size_t(2));
+    o = parseOptions({"--max-programs", "0"}, read);
+    CHECK_EQ(o.maxPrograms, 0);
+    // 认不出的参数、超出范围的值直接报错
+    CHECK(!parseOptions({"--disable-file"}, read).errors.empty());
+    CHECK(!parseOptions({"--max-programs=-1"}, read).errors.empty());
+    CHECK(!parseOptions({"--max-programs=abc"}, read).errors.empty());
 }
 
 TEST(PtyRunsACommandAndReadsItsOutput) {

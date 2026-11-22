@@ -16,7 +16,6 @@ namespace fs = std::filesystem;
 namespace {
 constexpr std::size_t kScrollbackBytes = 256 * 1024;
 constexpr std::size_t kMaxSessions = 16;
-constexpr std::size_t kMaxPrograms = 32;
 
 std::string randomId() {
     static thread_local std::mt19937_64 rng{std::random_device{}()};
@@ -343,8 +342,8 @@ struct ProgramManager::Runtime {
     }
 };
 
-ProgramManager::ProgramManager(fs::path configFile, fs::path installRoot, Logger log)
-    : file_(std::move(configFile)), root_(std::move(installRoot)), log_(std::move(log)) {
+ProgramManager::ProgramManager(fs::path configFile, fs::path installRoot, Logger log, int maxPrograms)
+    : file_(std::move(configFile)), root_(std::move(installRoot)), log_(std::move(log)), maxPrograms_(maxPrograms) {
     std::ifstream in(file_, std::ios::binary);
     const auto j = json::parse(in, nullptr, false);
     if (j.is_array()) {
@@ -427,7 +426,8 @@ json ProgramManager::save(const json& body, std::string& error) {
     if (!config.id.empty() && !runtime) { error = "没有找到这个程序"; return nullptr; }
     if (!runtime) {
         std::lock_guard lock(mu_);
-        if (programs_.size() >= kMaxPrograms) { error = "最多托管 32 个程序"; return nullptr; }
+        if (programs_.size() >= static_cast<std::size_t>(maxPrograms_))
+            { error = maxPrograms_ == 0 ? "不能添加托管程序（启动参数 --max-programs=0）" : "最多托管 " + std::to_string(maxPrograms_) + " 个程序（启动参数 --max-programs）"; return nullptr; }
         config.id = randomId();
         runtime = std::make_shared<Runtime>();
         runtime->config = config;

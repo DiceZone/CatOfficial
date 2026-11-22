@@ -4,7 +4,8 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-export interface Session { authenticated: boolean; must_change_password?: boolean }
+/// features：启动参数关掉的功能（--disable-files 等）为 false，菜单里不显示。
+export interface Session { authenticated: boolean; must_change_password?: boolean; features?: { files: boolean; terminal: boolean; programs: boolean } }
 
 /// 未登录（401）或必须先修改自动生成的密码（403）时回调，由外层切换到对应页面。
 let onUnauthorized: ((session: Session) => void) | null = null;

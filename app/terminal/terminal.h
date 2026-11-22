@@ -100,7 +100,9 @@ std::string resolveProgramCommand(const std::string& command, const std::filesys
 
 class ProgramManager {
 public:
-    ProgramManager(std::filesystem::path configFile, std::filesystem::path installRoot, Logger log);
+    /// @p maxPrograms 最多托管多少个（启动参数 --max-programs，默认 32；已有的超出部分照常保留，只是不能再添加）。
+    ProgramManager(std::filesystem::path configFile, std::filesystem::path installRoot, Logger log, int maxPrograms = 32);
+    int maxPrograms() const { return maxPrograms_; }
     ~ProgramManager();
     json list();
     json save(const json& body, std::string& error);    // 新增或修改
@@ -131,6 +133,7 @@ private:
     std::mutex mu_;
     std::vector<std::shared_ptr<Runtime>> programs_;
     int cols_ = 120, rows_ = 32;
+    int maxPrograms_ = 32;
 };
 
 }  // namespace catofficial::app::terminal

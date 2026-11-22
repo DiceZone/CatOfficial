@@ -32,6 +32,22 @@ CatOfficial-beta/
 - 不要在压缩包里直接运行，也不要把程序放在临时目录里（Windows 上会提示并拒绝启动）。
 - 开发时也可以直接运行主程序：`catofficial-core [配置文件]`，此时不支持在线安装更新。
 
+## 启动参数
+
+每一项都可以写在命令行，也可以用环境变量注入（容器、面板托管时更方便）。开关类参数在命令行或环境变量任一处打开即生效（环境变量写 `1` / `true` / `yes` / `on`）；带值的参数以命令行为准。写错的参数会直接报错并列出可用参数。
+
+| 命令行 | 环境变量 | 作用 |
+|---|---|---|
+| `[配置文件]` | `CATOFFICIAL_CONFIG` | 配置文件路径，默认安装目录的 `config.json`；数据目录固定在它旁边的 `data` |
+| `--files-full-access` | `CATOFFICIAL_FILES_FULL_ACCESS` | 文件管理开放整台机器（默认只开放安装目录） |
+| `--disable-files` | `CATOFFICIAL_DISABLE_FILES` | 关闭文件管理 |
+| `--disable-terminal` | `CATOFFICIAL_DISABLE_TERMINAL` | 关闭网页终端 |
+| `--disable-programs` | `CATOFFICIAL_DISABLE_PROGRAMS` | 关闭程序托管 |
+| `--max-programs=N` | `CATOFFICIAL_MAX_PROGRAMS` | 最多托管多少个程序（默认 32，`0` 表示不能再添加；已有的照常保留） |
+| `--container` | `CATOFFICIAL_CONTAINER` | 容器模式（与 Dice!Next 的 `DICENEXT_CONTAINER` 相同）：在线更新只提示新版本，不下载、不安装 |
+
+关掉的功能不会出现在面板菜单里，接口也会说明是被哪个参数关掉的。面板「重启」与在线更新后的重启会带上同样的参数。另有一个给启动器用的环境变量：`CATOFFICIAL_UPDATE_RESTART=NO`（安装更新后不自动拉起主程序，交给外部的进程守护）。
+
 ## 管理面板
 
 | 页面 | 内容 |
@@ -203,7 +219,7 @@ CatOfficial 状态
 
 这三页可以直接操作运行 CatOfficial 的机器。面板监听的不是本机时，页面顶部会提示风险；请使用足够强的面板密码。
 
-- **文件管理**默认只开放 CatOfficial 的安装目录，越不出去（符号链接、目录联接也算）。启动时加参数 `--files-full-access`（例如 `catofficial --files-full-access`）才开放整台机器，Windows 上根目录列出各个盘。删除的文件先进回收站，保留 7 天；覆盖时被盖掉的那一份也进回收站。每次改动都记录时间、IP、操作与路径。回收站与记录放在安装目录的 `.catofficial` 里，文件管理中看不见。
+- **文件管理**默认只开放 CatOfficial 的安装目录，越不出去（符号链接、目录联接也算）。启动时加参数 `--files-full-access`（或环境变量 `CATOFFICIAL_FILES_FULL_ACCESS=1`）才开放整台机器，Windows 上根目录列出各个盘。删除的文件先进回收站，保留 7 天；覆盖时被盖掉的那一份也进回收站。每次改动都记录时间、IP、操作与路径。回收站与记录放在安装目录的 `.catofficial` 里，文件管理中看不见。
 - **网页终端**在 Windows 上打开 PowerShell（需要 Windows 10 1809 或更新），在 Linux / macOS 上打开 `$SHELL`，工作目录是安装目录。终端一直跑在这台机器上，关掉网页后回来还能接着看；两小时没人看会自动关闭。
 - **程序托管**的设置保存在 `data/programs.json`。停止时先输入设置的停止指令（如 `stop`，留空则发送 Ctrl+C），超时后强制结束；两分钟内连续退出五次就不再自动重启。CatOfficial 退出时会先停止所有托管的程序。
 

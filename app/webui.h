@@ -129,7 +129,9 @@ public:
         });
         route("/api/webui/session", drogon::Get, false, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
             const bool ok = authenticated(req);
-            cb(jsonResponse(200, json{{"authenticated", ok}, {"must_change_password", ok && state().hub->config().webuiMustChangePassword}}));
+            const auto& tools = toolsSlot();
+            cb(jsonResponse(200, json{{"authenticated", ok}, {"must_change_password", ok && state().hub->config().webuiMustChangePassword},
+                                      {"features", json{{"files", tools.files != nullptr}, {"terminal", tools.sessions != nullptr}, {"programs", tools.programs != nullptr}}}}));
         });
         // 在线更新（与 Dice!Next 的 /api/system/update 相同的状态与动作）。
         route("/api/webui/update", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
@@ -367,14 +369,14 @@ private:
         // ── 文件管理 ──
         route("/api/webui/files/info", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
             auto store = toolsSlot().files;
-            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理不可用"}})); return; }
+            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理已在启动参数中关闭（--disable-files）"}})); return; }
             auto info = store->info();
             info["exposed"] = panelExposed();
             cb(jsonResponse(200, info));
         });
         route("/api/webui/files", drogon::Post, true, [](const drogon::HttpRequestPtr& req, const json& body, Callback&& cb) {
             auto store = toolsSlot().files;
-            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理不可用"}})); return; }
+            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理已在启动参数中关闭（--disable-files）"}})); return; }
             auto shared = std::make_shared<Callback>(std::move(cb));
             const auto ip = req->getPeerAddr().toIp();
             // 列目录、复制等可能碰到慢盘，放到工作线程，别卡住面板的事件循环
@@ -402,7 +404,7 @@ private:
         drogon::app().registerHandler("/api/webui/files/download", [](const drogon::HttpRequestPtr& req, Callback&& cb) {
             if (!guardRaw(req, cb)) return;
             auto store = toolsSlot().files;
-            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理不可用"}})); return; }
+            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理已在启动参数中关闭（--disable-files）"}})); return; }
             try {
                 const auto [real, name] = store->fileForDownload(req->getParameter("path"));
                 const bool inlineView = req->getParameter("inline") == "1";
@@ -422,7 +424,7 @@ private:
         drogon::app().registerHandler("/api/webui/files/upload", [](const drogon::HttpRequestPtr& req, Callback&& cb) {
             if (!guardRaw(req, cb)) return;
             auto store = toolsSlot().files;
-            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理不可用"}})); return; }
+            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理已在启动参数中关闭（--disable-files）"}})); return; }
             const auto path = req->getParameter("path");
             const auto ip = req->getPeerAddr().toIp();
             // 先把请求体落到临时文件，再交给文件管理（它负责写临时文件、改名、旧文件进回收站）
@@ -462,12 +464,12 @@ private:
         // ── 网页终端 ──
         route("/api/webui/terminal/sessions", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
             auto sessions = toolsSlot().sessions;
-            if (!sessions) { cb(jsonResponse(503, json{{"error", "网页终端不可用"}})); return; }
+            if (!sessions) { cb(jsonResponse(503, json{{"error", "网页终端已在启动参数中关闭（--disable-terminal）"}})); return; }
             cb(jsonResponse(200, json{{"sessions", sessions->list()}, {"shell", terminal::defaultShell()}, {"exposed", panelExposed()}}));
         });
         route("/api/webui/terminal", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
             auto sessions = toolsSlot().sessions;
-            if (!sessions) { cb(jsonResponse(503, json{{"error", "网页终端不可用"}})); return; }
+            if (!sessions) { cb(jsonResponse(503, json{{"error", "网页终端已在启动参数中关闭（--disable-terminal）"}})); return; }
             std::string error;
             auto session = sessions->open(body.value("label", std::string()), body.value("cols", 100), body.value("rows", 30), error);
             if (!session) { cb(jsonResponse(400, json{{"error", error}})); return; }
@@ -505,19 +507,19 @@ private:
         // ── 程序托管 ──
         route("/api/webui/programs", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
             auto programs = toolsSlot().programs;
-            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管不可用"}})); return; }
-            cb(jsonResponse(200, json{{"programs", programs->list()}, {"exposed", panelExposed()}}));
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
+            cb(jsonResponse(200, json{{"programs", programs->list()}, {"exposed", panelExposed()}, {"max_programs", programs->maxPrograms()}}));
         });
         route("/api/webui/programs", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
             auto programs = toolsSlot().programs;
-            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管不可用"}})); return; }
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
             std::string error;
             auto saved = programs->save(body, error);
             cb(saved.is_null() ? jsonResponse(400, json{{"error", error}}) : jsonResponse(200, saved));
         });
         route("/api/webui/programs/action", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
             auto programs = toolsSlot().programs;
-            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管不可用"}})); return; }
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
             const auto id = body.value("id", std::string());
             const auto action = body.value("action", std::string());
             std::string error;
@@ -533,7 +535,7 @@ private:
         });
         route("/api/webui/programs/read", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
             auto programs = toolsSlot().programs;
-            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管不可用"}})); return; }
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
             auto shared = std::make_shared<Callback>(std::move(cb));
             const bool found = programs->read(body.value("id", std::string()), body.value("cursor", std::int64_t(0)), 25.0,
                 [shared](const std::string& data, std::int64_t cursor, bool) {

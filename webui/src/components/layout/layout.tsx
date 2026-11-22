@@ -14,7 +14,7 @@ import { formatVersion } from '@/pages/about-page';
 
 type Icon = React.ComponentType<{ className?: string }>;
 type Section = 'run' | 'manage' | 'system';
-interface NavItem { path: string; labelKey: string; icon: Icon; section: Section }
+interface NavItem { path: string; labelKey: string; icon: Icon; section: Section; feature?: 'files' | 'terminal' | 'programs' }
 
 const NAV: NavItem[] = [
   { path: '/', labelKey: 'nav.dashboard', icon: Activity, section: 'run' },
@@ -26,9 +26,9 @@ const NAV: NavItem[] = [
   { path: '/replies', labelKey: 'nav.replies', icon: MessageSquareReply, section: 'manage' },
   { path: '/materials', labelKey: 'nav.materials', icon: Images, section: 'manage' },
   { path: '/bindings', labelKey: 'nav.bindings', icon: Link2, section: 'manage' },
-  { path: '/files', labelKey: 'nav.files', icon: FolderOpen, section: 'system' },
-  { path: '/terminal', labelKey: 'nav.terminal', icon: SquareTerminal, section: 'system' },
-  { path: '/programs', labelKey: 'nav.programs', icon: Boxes, section: 'system' },
+  { path: '/files', labelKey: 'nav.files', icon: FolderOpen, section: 'system', feature: 'files' },
+  { path: '/terminal', labelKey: 'nav.terminal', icon: SquareTerminal, section: 'system', feature: 'terminal' },
+  { path: '/programs', labelKey: 'nav.programs', icon: Boxes, section: 'system', feature: 'programs' },
   { path: '/settings', labelKey: 'nav.settings', icon: SlidersHorizontal, section: 'system' },
   { path: '/about', labelKey: 'nav.about', icon: Info, section: 'system' },
 ];
@@ -41,11 +41,13 @@ export function Layout({ children, currentPath, onNavigate }: LayoutProps) {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const go = (path: string) => { onNavigate(path); setMenuOpen(false); };
 
+  // 启动参数关掉的功能（--disable-files 等）不出现在菜单里
+  const features = useQuery({ queryKey: ['session'], queryFn: api.session }).data?.features;
   const navList = (mobile: boolean) => SECTIONS.map((section) => (
     <div key={section}>
       <p className="v2-section-label">{t(`nav.section_${section}`)}</p>
       <div className="space-y-0.5">
-        {NAV.filter((item) => item.section === section).map((item) => (
+        {NAV.filter((item) => item.section === section && (!item.feature || features?.[item.feature] !== false)).map((item) => (
           <button key={item.path} onClick={() => go(item.path)} aria-current={item.path === currentPath ? 'page' : undefined}
             className={cn('v2-nav-item flex w-full items-center gap-3 px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
               mobile ? 'text-sm' : 'text-[13px]')}>
