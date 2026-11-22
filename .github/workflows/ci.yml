@@ -1,0 +1,91 @@
+name: CI
+
+# 每次推送到 main 或提交 PR 时自动编译前后端并运行单元测试。发布正式包见 release.yml。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '26.x'
+  # 与 vcpkg.json 的 builtin-baseline 保持一致。
+  VCPKG_BASELINE: '44819aa2a6c10e56065e2b0330e7d6c89d1d2574'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  webui:
+    name: WebUI
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: true
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build WebUI
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+          # 资源必须是相对路径，放在反向代理子路径下才能用。
+          if grep -Eq '(src|href)="/assets/' dist/index.html; then echo "WebUI must be built with Vite base './'" >&2; exit 1; fi
+
+  backend:
+    name: Backend (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: Windows
+            runner: windows-2022
+            triplet: x64-windows
+          - os: Linux
+            runner: ubuntu-24.04
+            triplet: x64-linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: main
+      - name: Install build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build git curl zip unzip tar pkg-config
+      - name: Prepare dependencies
+        uses: ./main/.github/actions/setup-vcpkg
+        with:
+          triplet: ${{ matrix.triplet }}
+          baseline: ${{ env.VCPKG_BASELINE }}
+      - name: Configure
+        shell: bash
+        working-directory: main
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} -DVCPKG_MANIFEST_MODE=OFF -DVCPKG_INSTALLED_DIR="$VCPKG_ROOT/installed"
+      - name: Compile
+        shell: bash
+        working-directory: main
+        run: cmake --build build --config Release --parallel 2
+      - name: Run tests
+        shell: bash
+        working-directory: main
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}
+          path: |
+            vcpkg/buildtrees/**/*.log
+            main/build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore

@@ -1,0 +1,251 @@
+name: Release CatOfficial
+
+# 手动触发：编译 Windows / Linux / macOS 各平台安装包，测试通过后发布 GitHub Release。
+# 版本号取 CMakeLists.txt 的 project VERSION，构建号 = 同版本已发布的最大 beta 号 + 1，
+# 标签形如 v0.1.0-beta.3。只有发布成功才会创建标签，失败的运行不占用构建号。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '26.x'
+  # 与 vcpkg.json 的 builtin-baseline 保持一致。
+  VCPKG_BASELINE: '44819aa2a6c10e56065e2b0330e7d6c89d1d2574'
+
+# 串行执行，上一次发布创建标签后下一次才计算构建号。
+concurrency:
+  group: catofficial-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+      full: ${{ steps.version.outputs.full }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Calculate release build number
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -nE 's/^project\(CatOfficial VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt | head -n1)
+          [[ -n "$version" ]] || { echo 'Cannot read version from CMakeLists.txt' >&2; exit 1; }
+          last=$(git tag --list "v${version}-beta.*" | sed -nE "s/^v${version//./\\.}-beta\.([0-9]+)$/\1/p" | sort -n | tail -n1)
+          build=$(( ${last:-0} + 1 ))
+          printf 'version=%s\nbuild=%s\nfull=%s-beta.%s\ntag=v%s-beta.%s\n' "$version" "$build" "$version" "$build" "$version" "$build" >> "$GITHUB_OUTPUT"
+          echo "Release v${version}-beta.${build}"
+
+  webui:
+    name: WebUI
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: true
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build WebUI
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+          if grep -Eq '(src|href)="/assets/' dist/index.html; then echo "WebUI must be built with Vite base './'" >&2; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: webui/dist
+          if-no-files-found: error
+
+  windows:
+    name: Windows (${{ matrix.arch }})
+    needs: [prepare, webui]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-2022
+            triplet: x64-windows
+          - arch: arm64
+            runner: windows-11-arm
+            triplet: arm64-windows
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: main/webui/dist
+      - name: Prepare dependencies
+        uses: ./main/.github/actions/setup-vcpkg
+        with:
+          triplet: ${{ matrix.triplet }}
+          baseline: ${{ env.VCPKG_BASELINE }}
+      - name: Configure
+        shell: pwsh
+        working-directory: main
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCATOFFICIAL_BUILD=${{ needs.prepare.outputs.build }} -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} -DVCPKG_MANIFEST_MODE=OFF -DVCPKG_INSTALLED_DIR="$env:VCPKG_ROOT/installed"
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
+      - name: Compile
+        shell: pwsh
+        working-directory: main
+        run: |
+          cmake --build build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'CMake build failed' }
+      - name: Run tests
+        shell: pwsh
+        working-directory: main
+        run: |
+          ctest --test-dir build -C Release --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+      - name: Package
+        shell: pwsh
+        working-directory: main
+        run: ./scripts/package-windows.ps1 -Version '${{ needs.prepare.outputs.full }}' -Architecture '${{ matrix.arch }}' -BuildDir build -WebDist webui/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatOfficial-windows-${{ matrix.arch }}
+          path: main/release/*.zip
+          if-no-files-found: error
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-windows-${{ matrix.arch }}
+          path: |
+            vcpkg/buildtrees/**/*.log
+            main/build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+
+  unix:
+    name: ${{ matrix.os }} (${{ matrix.arch }})
+    needs: [prepare, webui]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-24.04
+            triplet: x64-linux
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            triplet: arm64-linux
+          # macOS 14 运行环境已于 2026-11 下线；在 macos-15 上编译，仍以 macOS 14 为最低版本。
+          - os: macos
+            arch: arm64
+            runner: macos-15
+            triplet: arm64-osx
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      VCPKG_KEEP_ENV_VARS: MACOSX_DEPLOYMENT_TARGET
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: main/webui/dist
+      - name: Install build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build git curl zip unzip tar pkg-config
+      - name: Prepare dependencies
+        uses: ./main/.github/actions/setup-vcpkg
+        with:
+          triplet: ${{ matrix.triplet }}
+          baseline: ${{ env.VCPKG_BASELINE }}
+      - name: Configure
+        working-directory: main
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCATOFFICIAL_BUILD=${{ needs.prepare.outputs.build }} -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} -DVCPKG_MANIFEST_MODE=OFF -DVCPKG_INSTALLED_DIR="$VCPKG_ROOT/installed"
+      - name: Compile
+        working-directory: main
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then jobs=$(sysctl -n hw.ncpu); else jobs=$(nproc); fi
+          cmake --build build --parallel "$jobs"
+      - name: Run tests
+        working-directory: main
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+      - name: Package
+        working-directory: main
+        run: |
+          chmod +x scripts/package-unix.sh
+          scripts/package-unix.sh ${{ matrix.os }} ${{ matrix.arch }} '${{ needs.prepare.outputs.full }}' build webui/dist
+          if [ "$RUNNER_OS" = Linux ]; then ldd build/catofficial || true; else otool -L build/catofficial; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatOfficial-${{ matrix.os }}-${{ matrix.arch }}
+          path: main/release/*.tar.gz
+          if-no-files-found: error
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            vcpkg/buildtrees/**/*.log
+            main/build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, windows, unix]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: CatOfficial-*
+          merge-multiple: true
+      - name: Verify assets and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          for target in windows-amd64.zip windows-arm64.zip linux-amd64.tar.gz linux-arm64.tar.gz macos-arm64.tar.gz; do
+            compgen -G "CatOfficial-*-${target}" > /dev/null || { echo "Missing release asset: ${target}" >&2; exit 1; }
+          done
+          sha256sum CatOfficial-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Generate release notes
+        shell: bash
+        run: |
+          python3 .github/scripts/release-notes.py --tag '${{ needs.prepare.outputs.tag }}' --sha '${{ github.sha }}' --repo '${{ github.repository }}' --output release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: CatOfficial ${{ needs.prepare.outputs.full }}
+          body_path: release-notes.md
+          prerelease: true
+          files: |
+            artifacts/CatOfficial-*
+            artifacts/SHA256SUMS.txt
