@@ -12,11 +12,13 @@ CatOfficial 把 QQ 官方机器人转接为标准 OneBot V11，让原本面向 O
 
 ## 快速开始
 
+从 [Releases](https://github.com/DiceZone/CatOfficial/releases) 下载对应系统的压缩包（Windows x64 / ARM64、Linux x86_64 / ARM64、macOS Apple 芯片），解压后运行：
+
 ```
 catofficial [配置文件]
 ```
 
-第一次运行会在当前目录生成 `config.json` 并照常启动。打开控制台里显示的管理面板地址（默认 `http://127.0.0.1:18082/`，密码也显示在控制台），在「登录管理」里添加官方机器人（填 AppID 与 AppSecret，或直接扫码登录），在「连接管理」里添加 OneBot 连接即可。
+第一次运行会生成 `config.json` 并照常启动（Windows 上放在程序旁边，其他系统放在当前目录）。打开控制台里显示的管理面板地址（默认 `http://127.0.0.1:18082/`，密码也显示在控制台），在「登录管理」里添加官方机器人（填 AppID 与 AppSecret，或直接扫码登录），在「连接管理」里添加 OneBot 连接即可。
 
 ## 管理面板
 
@@ -30,7 +32,7 @@ catofficial [配置文件]
 | 自定义回复 | 关键词触发的自动回复，见下文 |
 | 官方图床 | 官方素材接口里的图片：上传、替换、删除，复制可写进 Markdown 的引用 |
 | 官民绑定 | 已绑定的用户与群、等待确认的群、手动绑定与解绑 |
-| 设置 | 主人、邮件（SMTP）与运行异常通知、绑定指令、Webhook 入口、面板端口与密码、聊天记录与图片缓存的保留天数 |
+| 设置 | 主人、邮件（SMTP）与运行异常通知、绑定指令、Webhook 入口、面板端口与密码、Windows 托盘、聊天记录与图片缓存的保留天数 |
 
 - 机器人、连接与设置的修改写入配置文件并立即生效，不用重启。只有面板自身的地址与官方 Webhook 入口改了要重启，面板顶部会提示，点一下即可；重启后登录状态保留。
 - 面板与 OneBot 使用不同端口。默认只监听本机；改成 `0.0.0.0` 时其他机器也能访问，请使用足够强的密码。同一 IP 连续输错 5 次密码会被暂停 5 分钟。
@@ -166,6 +168,22 @@ CatOfficial 状态
 | 加群申请 | `request.group`（add） |
 | 其他（主动消息开关、按钮互动、订阅状态、频道事件等） | `notice.qq_official`，`sub_type` 为官方事件名的小写，原始数据在 `data` |
 
+## Windows 托盘
+
+在 Windows 上，程序启动后最小化到右下角托盘（第一次启动除外，控制台要显示生成的面板密码），控制台的关闭按钮会被禁用，避免误关。右键托盘图标：
+
+- 打开应用目录
+- 显示 / 隐藏控制台
+- 打开网页面板
+- 开机自启动（勾选即写入当前用户的启动项）
+- 退出
+
+托盘的悬停提示文字与是否最小化到托盘可在面板「设置 → Windows 托盘」修改，也可以直接编辑配置文件的 `tray` 段：
+
+```json
+"tray": { "text": "", "start_hidden": true }
+```
+
 ## 构建
 
 需要 CMake 3.21+、C++20，以及 [Drogon](https://github.com/drogonframework/drogon)、[IXWebSocket](https://github.com/machinezone/IXWebSocket)、[nlohmann/json](https://github.com/nlohmann/json)、OpenSSL、SQLite3、libcurl（`vcpkg.json` 已列出）。
@@ -175,7 +193,9 @@ cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cm
 cmake --build build --config Release
 ```
 
-产物为 `catofficial` 与单元测试 `catofficial-tests`。
+产物为 `catofficial` 与单元测试 `catofficial-tests`。`-DCATOFFICIAL_BUILD=N` 可指定构建号，版本显示为 `0.1.0-beta.N`。
+
+推送到 `main` 时 GitHub Actions 会自动编译前后端并运行测试（`.github/workflows/ci.yml`）；在 Actions 页面手动运行「Release CatOfficial」会编译全部平台的安装包并发布 Release（`.github/workflows/release.yml`）。本地打包可用 `scripts/package-windows.ps1` 与 `scripts/package-unix.sh`。
 
 ## 作为库使用
 
