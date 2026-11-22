@@ -11,6 +11,10 @@
     "sqlite3",
     "zlib",
     {
+      "name": "minizip",
+      "default-features": false
+    },
+    {
       "name": "curl",
       "features": [
         "non-http",

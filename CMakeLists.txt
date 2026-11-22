@@ -31,6 +31,7 @@ if(CATOFFICIAL_BUILD_APP OR CATOFFICIAL_BUILD_TESTS)
     find_package(CURL CONFIG REQUIRED)
     find_package(ixwebsocket CONFIG REQUIRED)
     find_package(ZLIB REQUIRED)
+    find_package(minizip CONFIG REQUIRED)
 
     # 版本号：发布时 CI 传入 -DCATOFFICIAL_BUILD=N，显示为 0.1.0-beta.N；本地编译为 0，显示 0.1.0。
     set(CATOFFICIAL_BUILD 0 CACHE STRING "Release build number (0 for local builds)")
@@ -45,10 +46,19 @@ if(CATOFFICIAL_BUILD_APP OR CATOFFICIAL_BUILD_TESTS)
     target_include_directories(catofficial_app_deps INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_link_libraries(catofficial_app_deps INTERFACE
         catofficial::core Drogon::Drogon nlohmann_json::nlohmann_json
-        OpenSSL::SSL OpenSSL::Crypto unofficial::sqlite3::sqlite3 CURL::libcurl ixwebsocket::ixwebsocket ZLIB::ZLIB)
+        OpenSSL::SSL OpenSSL::Crypto unofficial::sqlite3::sqlite3 CURL::libcurl ixwebsocket::ixwebsocket ZLIB::ZLIB
+        $<IF:$<TARGET_EXISTS:MINIZIP::minizip>,MINIZIP::minizip,MINIZIP::minizipstatic>)
+    # 网页终端：Linux 的 forkpty 在 libutil；macOS 的 iconv 是单独的库（文件管理解压 GBK 文件名用）
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(catofficial_app_deps INTERFACE util)
+    elseif(APPLE)
+        target_link_libraries(catofficial_app_deps INTERFACE iconv)
+    endif()
 
     # 在线更新（检查、下载、校验、解压）；POSIX 用自带的 tar.gz 读取器，Windows 用系统的 tar.exe。
-    set(CATOFFICIAL_UPDATE_SOURCES app/update/update_service.cpp app/update/update_archive.cpp app/platform/system_info.cpp)
+    # 文件管理（zip 打包解压用 minizip）、网页终端与程序托管。
+    set(CATOFFICIAL_UPDATE_SOURCES app/update/update_service.cpp app/update/update_archive.cpp app/platform/system_info.cpp
+        app/files/file_store.cpp app/terminal/pty.cpp app/terminal/terminal.cpp)
 endif()
 
 if(CATOFFICIAL_BUILD_APP)

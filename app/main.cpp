@@ -13,6 +13,8 @@
 #include "store.h"
 #include "webui.h"
 #include "update/update_service.h"
+#include "files/file_store.h"
+#include "terminal/terminal.h"
 
 #include <curl/curl.h>
 #include <drogon/drogon.h>
@@ -82,22 +84,24 @@ bool managedLaunch() {
 /// 重启（面板「重启」或安装更新）。由启动器拉起时交给启动器：Windows 拉起
 /// 「catofficial.exe --after <本进程 PID>」，它等本进程退出、安装待装的更新后再拉起新 core；
 /// POSIX 以退出码 42 结束，由前台管理程序接手。开发时直接运行 core 则重新启动自己。
-/// 返回 main 应使用的退出码。
-int relaunch(char** argv, const std::filesystem::path& configPath, int argc) {
+/// 返回 main 应使用的退出码。@p flags 是启动时带的开关（如 --files-full-access），重启后照样带上。
+int relaunch(char** argv, const std::filesystem::path& configPath, bool configGiven, const std::vector<std::string>& flags) {
 #ifdef _WIN32
     (void)argv;
     std::wstring command;
     std::wstring exe;
+    std::wstring tail;
+    for (const auto& flag : flags) tail += L" " + std::filesystem::path(catofficial::app::fromUtf8(flag)).wstring();
     if (managedLaunch()) {
         exe = std::filesystem::absolute("catofficial.exe").wstring();
-        command = L"\"" + exe + L"\" --after " + std::to_wstring(GetCurrentProcessId());
-        if (argc > 1) command += L" \"" + configPath.wstring() + L"\"";
+        command = L"\"" + exe + L"\" --after " + std::to_wstring(GetCurrentProcessId()) + tail;
+        if (configGiven) command += L" \"" + configPath.wstring() + L"\"";
     } else {
         wchar_t self[MAX_PATH];
         GetModuleFileNameW(nullptr, self, MAX_PATH);
         exe = self;
         // 当前目录可能已切换，配置文件改用绝对路径传下去。
-        command = L"\"" + exe + L"\" \"" + configPath.wstring() + L"\"";
+        command = L"\"" + exe + L"\"" + tail + L" \"" + configPath.wstring() + L"\"";
         SetEnvironmentVariableW(L"CATOFFICIAL_RESTARTED", L"1");
     }
     std::vector<wchar_t> buffer(command.begin(), command.end());
@@ -109,7 +113,7 @@ int relaunch(char** argv, const std::filesystem::path& configPath, int argc) {
     }
     return 0;
 #else
-    (void)configPath; (void)argc;
+    (void)configPath; (void)configGiven; (void)flags;
     if (managedLaunch()) return catofficial::app::update::posix::kRestartExitCode;
     setenv("CATOFFICIAL_RESTARTED", "1", 1);
     execv("/proc/self/exe", argv);
@@ -135,7 +139,20 @@ int main(int argc, char** argv) {
     // 命令行给的路径按启动时的当前目录解析；之后在 Windows 上切到安装目录（与 Dice!Next 相同：
     // 发行包里是 app\ 的上一级），这样双击、开机自启动（当前目录是 System32）都读写安装目录里的
     // config.json 与 data。在临时目录（压缩包预览）里运行时拒绝启动。
-    fs::path configPath = argc > 1 ? fs::absolute(fromUtf8(argv[1]), ec) : fs::path();
+    // 参数：[--files-full-access] [配置文件]。开关以 -- 开头，第一个不是开关的参数是配置文件。
+    std::vector<std::string> flags;
+    fs::path configPath;
+    bool filesFullAccess = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg.rfind("--", 0) == 0) {
+            flags.push_back(arg);
+            if (arg == "--files-full-access") filesFullAccess = true;
+        } else if (configPath.empty()) {
+            configPath = fs::absolute(fromUtf8(arg), ec);
+        }
+    }
+    const bool configGiven = !configPath.empty();
     if (!startup::prepareCoreLaunch()) return 2;
     if (configPath.empty()) configPath = fs::absolute("config.json", ec);
     if (!fs::exists(configPath)) {
@@ -198,6 +215,16 @@ int main(int argc, char** argv) {
     hub->init();
     hub->loadBindings(dataDir / "bindings.json");
     Server::setup(hub);
+
+    // 文件管理（默认只开放安装目录，--files-full-access 开放整台机器）、网页终端与程序托管。
+    const fs::path installRoot = configPath.parent_path();
+    WebUi::Tools tools;
+    tools.files = std::make_shared<files::FileStore>(installRoot, filesFullAccess);
+    tools.sessions = std::make_shared<terminal::SessionManager>(installRoot, log);
+    tools.programs = std::make_shared<terminal::ProgramManager>(dataDir / "programs.json", installRoot, log);
+    WebUi::setTools(tools);
+    // 上传最大 2 GB；超过 8 MB 的请求体由 drogon 落到临时文件，不占内存
+    drogon::app().setClientMaxBodySize(files::kMaxStreamUploadBytes + (1 << 20)).setClientMaxMemoryBodySize(8 << 20);
     WebUi::setup(configPath, dataDir, hub);
 
     log(catofficial::LogLevel::info, std::string("CatOfficial ") + kVersion + " 启动中");
@@ -234,10 +261,16 @@ int main(int argc, char** argv) {
     drogon::app().getLoop()->runEvery(60.0, [updater] { updater->tick(); });
 
     drogon::app().setLogLevel(trantor::Logger::kWarn).setThreadNum(2);
-    drogon::app().getLoop()->queueInLoop([hub] {
+    drogon::app().getLoop()->queueInLoop([hub, tools] {
         hub->start();
         Server::startClients();
+        tools.programs->autoStart();
     });
+    if (filesFullAccess) log(catofficial::LogLevel::warn, "文件管理已开放整台机器（--files-full-access）");
+    // 回收站里过期的条目每小时清一次；闲置的终端会话每五分钟收一次
+    drogon::app().getLoop()->runAfter(30.0, [files = tools.files] { files->purgeExpiredTrash(); });
+    drogon::app().getLoop()->runEvery(3600.0, [files = tools.files] { files->purgeExpiredTrash(); });
+    drogon::app().getLoop()->runEvery(300.0, [sessions = tools.sessions] { sessions->reap(); });
     // Windows 托盘：打开应用目录 / 显示·隐藏控制台 / 打开网页面板 / 开机自启动 / 退出。
     // 默认启动即最小化到托盘（隐藏控制台、弹气泡、禁用控制台的关闭按钮）；tray.start_hidden=false 时保留控制台。
     // 刚生成面板密码的那次启动保留控制台，让人看得到密码。
@@ -247,12 +280,16 @@ int main(int argc, char** argv) {
     stopSystemTray();
     WebUi::setUpdater(nullptr);
     updater.reset();
+    // 先按各自的方式停掉托管的程序（给它们保存数据的时间），再关终端
+    tools.programs->stopAll();
+    tools.sessions->closeAll();
+    WebUi::setTools({});
     hub->stop();
     ImageCache::get().stop();
     curl_global_cleanup();
     if (WebUi::restartRequested()) {
         log(catofficial::LogLevel::info, "正在重启");
-        return relaunch(argv, configPath, argc);
+        return relaunch(argv, configPath, configGiven, flags);
     }
     return 0;
 }

@@ -12,6 +12,8 @@
 #include "server.h"
 #include "platform/tray_win.h"
 #include "update/update_service.h"
+#include "files/file_store.h"
+#include "terminal/terminal.h"
 
 #include <catofficial/qrlogin.h>
 
@@ -28,6 +30,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 
 namespace catofficial::app {
 
@@ -70,6 +73,14 @@ public:
         std::lock_guard lock(updaterMutex());
         updaterSlot() = std::move(updater);
     }
+
+    /// 文件管理、网页终端与程序托管（main 创建）。
+    struct Tools {
+        std::shared_ptr<files::FileStore> files;
+        std::shared_ptr<terminal::SessionManager> sessions;
+        std::shared_ptr<terminal::ProgramManager> programs;
+    };
+    static void setTools(Tools tools) { toolsSlot() = std::move(tools); }
 
     /// 启动时改写配置文件里的面板端口（端口被占用时顺延）。
     static bool saveWebuiPort(const std::filesystem::path& configPath, uint16_t port) {
@@ -329,9 +340,218 @@ public:
         route("/api/webui/sysinfo", drogon::Get, true, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
             cb(jsonResponse(200, panel::sysinfoJson(panel::intParam(params(req), "since", 0))));
         });
+
+        registerTools();
     }
 
 private:
+    static Tools& toolsSlot() { static Tools t; return t; }
+
+    /// 面板监听的不是本机时，文件管理与终端页顶部要提示风险。
+    static bool panelExposed() {
+        const auto& host = state().startup.webuiHost;
+        return host != "127.0.0.1" && host != "localhost" && host != "::1";
+    }
+
+    /// 不经 serve() 的接口（上传的请求体不是 JSON）用它做同样的登录检查。
+    static bool guardRaw(const drogon::HttpRequestPtr& req, Callback& cb) {
+        if (!onPanel(req)) { cb(notFound()); return false; }
+        if (!authenticated(req)) { cb(jsonResponse(401, json{{"error", "请先登录"}})); return false; }
+        if (state().hub->config().webuiMustChangePassword) { cb(jsonResponse(403, json{{"error", "请先修改面板密码"}, {"must_change_password", true}})); return false; }
+        return true;
+    }
+
+    /// 文件管理、网页终端、程序托管的接口（前端照搬 BDC 的 InstanceFiles / NodeTerminal）。
+    static void registerTools() {
+        using files::FileError;
+        // ── 文件管理 ──
+        route("/api/webui/files/info", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
+            auto store = toolsSlot().files;
+            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理不可用"}})); return; }
+            auto info = store->info();
+            info["exposed"] = panelExposed();
+            cb(jsonResponse(200, info));
+        });
+        route("/api/webui/files", drogon::Post, true, [](const drogon::HttpRequestPtr& req, const json& body, Callback&& cb) {
+            auto store = toolsSlot().files;
+            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理不可用"}})); return; }
+            auto shared = std::make_shared<Callback>(std::move(cb));
+            const auto ip = req->getPeerAddr().toIp();
+            // 列目录、复制等可能碰到慢盘，放到工作线程，别卡住面板的事件循环
+            std::thread([store, body, ip, shared] {
+                drogon::HttpResponsePtr resp;
+                try {
+                    resp = jsonResponse(200, files::handleAction(*store, body, "面板", ip));
+                } catch (const FileError& e) {
+                    json error{{"error", e.what()}};
+                    if (e.status == 409) error["conflict"] = true;
+                    resp = jsonResponse(e.status, error);
+                } catch (const std::exception& e) {
+                    resp = jsonResponse(500, json{{"error", std::string("操作失败：") + e.what()}});
+                }
+                (*shared)(resp);
+            }).detach();
+        });
+        drogon::app().registerHandler("/api/webui/files/jobs/{id}", [](const drogon::HttpRequestPtr& req, Callback&& cb, const std::string& id) {
+            if (!guardRaw(req, cb)) return;
+            auto store = toolsSlot().files;
+            auto job = store ? store->job(id) : nullptr;
+            cb(job ? jsonResponse(200, job->snapshot()) : jsonResponse(404, json{{"error", "任务不存在或已过期"}}));
+        }, {drogon::Get});
+        // 下载 / 预览：?path=...&inline=1
+        drogon::app().registerHandler("/api/webui/files/download", [](const drogon::HttpRequestPtr& req, Callback&& cb) {
+            if (!guardRaw(req, cb)) return;
+            auto store = toolsSlot().files;
+            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理不可用"}})); return; }
+            try {
+                const auto [real, name] = store->fileForDownload(req->getParameter("path"));
+                const bool inlineView = req->getParameter("inline") == "1";
+                auto resp = drogon::HttpResponse::newFileResponse(utf8(real));
+                // 中文文件名按 RFC 5987 写成 filename*=UTF-8''…，直接塞原始字节浏览器会显示成乱码
+                std::string ascii;
+                for (unsigned char c : name) ascii += (c >= 0x20 && c < 0x7f && c != '"' && c != '\\') ? static_cast<char>(c) : '_';
+                resp->addHeader("Content-Disposition", std::string(inlineView ? "inline" : "attachment") + "; filename=\"" + ascii +
+                    "\"; filename*=UTF-8''" + drogon::utils::urlEncodeComponent(name));
+                resp->addHeader("Cache-Control", "no-store");
+                cb(resp);
+            } catch (const FileError& e) {
+                cb(jsonResponse(e.status, json{{"error", e.what()}}));
+            }
+        }, {drogon::Get});
+        // 上传：请求体就是文件内容，?path= 指定目标
+        drogon::app().registerHandler("/api/webui/files/upload", [](const drogon::HttpRequestPtr& req, Callback&& cb) {
+            if (!guardRaw(req, cb)) return;
+            auto store = toolsSlot().files;
+            if (!store) { cb(jsonResponse(503, json{{"error", "文件管理不可用"}})); return; }
+            const auto path = req->getParameter("path");
+            const auto ip = req->getPeerAddr().toIp();
+            // 先把请求体落到临时文件，再交给文件管理（它负责写临时文件、改名、旧文件进回收站）
+            std::error_code ec;
+            const auto staging = std::filesystem::temp_directory_path(ec) / ("catofficial-upload-" + randomHex(8));
+            {
+                std::ofstream out(staging, std::ios::binary | std::ios::trunc);
+                const auto body = req->getBody();
+                out.write(body.data(), static_cast<std::streamsize>(body.size()));
+                if (!out) { std::filesystem::remove(staging, ec); cb(jsonResponse(500, json{{"error", "暂存上传内容失败，磁盘可能已满"}})); return; }
+            }
+            auto shared = std::make_shared<Callback>(std::move(cb));
+            std::thread([store, path, ip, staging, shared] {
+                drogon::HttpResponsePtr resp;
+                try {
+                    const auto [written, replaced] = store->upload(path, staging, "面板");
+                    files::OpRecord record;
+                    record.action = "upload";
+                    record.path = path;
+                    record.bytes = static_cast<std::int64_t>(written);
+                    record.actor = "面板";
+                    record.ip = ip;
+                    if (replaced) record.trashId = replaced->id;
+                    store->record(record);
+                    resp = jsonResponse(200, json{{"written", written}, {"path", path}});
+                } catch (const FileError& e) {
+                    resp = jsonResponse(e.status, json{{"error", e.what()}});
+                } catch (const std::exception& e) {
+                    resp = jsonResponse(500, json{{"error", std::string("上传失败：") + e.what()}});
+                }
+                std::error_code ignored;
+                std::filesystem::remove(staging, ignored);
+                (*shared)(resp);
+            }).detach();
+        }, {drogon::Post});
+
+        // ── 网页终端 ──
+        route("/api/webui/terminal/sessions", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
+            auto sessions = toolsSlot().sessions;
+            if (!sessions) { cb(jsonResponse(503, json{{"error", "网页终端不可用"}})); return; }
+            cb(jsonResponse(200, json{{"sessions", sessions->list()}, {"shell", terminal::defaultShell()}, {"exposed", panelExposed()}}));
+        });
+        route("/api/webui/terminal", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto sessions = toolsSlot().sessions;
+            if (!sessions) { cb(jsonResponse(503, json{{"error", "网页终端不可用"}})); return; }
+            std::string error;
+            auto session = sessions->open(body.value("label", std::string()), body.value("cols", 100), body.value("rows", 30), error);
+            if (!session) { cb(jsonResponse(400, json{{"error", error}})); return; }
+            cb(jsonResponse(200, json{{"id", session->id}, {"shell", session->shell}, {"opened", session->opened}}));
+        });
+        route("/api/webui/terminal/read", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto sessions = toolsSlot().sessions;
+            auto session = sessions ? sessions->get(body.value("session_id", std::string())) : nullptr;
+            if (!session) { cb(jsonResponse(404, json{{"error", "终端会话不存在"}})); return; }
+            auto shared = std::make_shared<Callback>(std::move(cb));
+            session->output->read(body.value("cursor", std::int64_t(0)), 25.0, [shared](const std::string& data, std::int64_t cursor, bool alive) {
+                (*shared)(jsonResponse(200, json{{"data", drogon::utils::base64Encode(data)}, {"cursor", cursor}, {"alive", alive}}));
+            });
+        });
+        route("/api/webui/terminal/input", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto sessions = toolsSlot().sessions;
+            auto session = sessions ? sessions->get(body.value("session_id", std::string())) : nullptr;
+            if (!session) { cb(jsonResponse(404, json{{"error", "终端会话不存在"}})); return; }
+            session->pty->write(drogon::utils::base64Decode(body.value("data", std::string())));
+            cb(jsonResponse(200, json{{"ok", true}}));
+        });
+        route("/api/webui/terminal/resize", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto sessions = toolsSlot().sessions;
+            auto session = sessions ? sessions->get(body.value("session_id", std::string())) : nullptr;
+            if (!session) { cb(jsonResponse(404, json{{"error", "终端会话不存在"}})); return; }
+            session->pty->resize(body.value("cols", 100), body.value("rows", 30));
+            cb(jsonResponse(200, json{{"ok", true}}));
+        });
+        route("/api/webui/terminal/close", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto sessions = toolsSlot().sessions;
+            const bool closed = sessions && sessions->close(body.value("session_id", std::string()));
+            cb(closed ? jsonResponse(200, json{{"ok", true}}) : jsonResponse(404, json{{"error", "终端会话不存在"}}));
+        });
+
+        // ── 程序托管 ──
+        route("/api/webui/programs", drogon::Get, true, [](const drogon::HttpRequestPtr&, const json&, Callback&& cb) {
+            auto programs = toolsSlot().programs;
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管不可用"}})); return; }
+            cb(jsonResponse(200, json{{"programs", programs->list()}, {"exposed", panelExposed()}}));
+        });
+        route("/api/webui/programs", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto programs = toolsSlot().programs;
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管不可用"}})); return; }
+            std::string error;
+            auto saved = programs->save(body, error);
+            cb(saved.is_null() ? jsonResponse(400, json{{"error", error}}) : jsonResponse(200, saved));
+        });
+        route("/api/webui/programs/action", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto programs = toolsSlot().programs;
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管不可用"}})); return; }
+            const auto id = body.value("id", std::string());
+            const auto action = body.value("action", std::string());
+            std::string error;
+            bool ok = false;
+            if (action == "start") ok = programs->start(id, error);
+            else if (action == "stop") ok = programs->stop(id, false, error);
+            else if (action == "kill") ok = programs->stop(id, true, error);
+            else if (action == "restart") ok = programs->restart(id, error);
+            else if (action == "delete") ok = programs->remove(id, error);
+            else if (action == "clear") { programs->clearOutput(id); ok = true; }
+            else error = "未知的操作";
+            cb(ok ? jsonResponse(200, json{{"ok", true}, {"programs", programs->list()}}) : jsonResponse(400, json{{"error", error}}));
+        });
+        route("/api/webui/programs/read", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto programs = toolsSlot().programs;
+            if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管不可用"}})); return; }
+            auto shared = std::make_shared<Callback>(std::move(cb));
+            const bool found = programs->read(body.value("id", std::string()), body.value("cursor", std::int64_t(0)), 25.0,
+                [shared](const std::string& data, std::int64_t cursor, bool) {
+                    (*shared)(jsonResponse(200, json{{"data", drogon::utils::base64Encode(data)}, {"cursor", cursor}, {"alive", true}}));
+                });
+            if (!found) (*shared)(jsonResponse(404, json{{"error", "没有找到这个程序"}}));
+        });
+        route("/api/webui/programs/input", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            auto programs = toolsSlot().programs;
+            const bool ok = programs && programs->input(body.value("id", std::string()), drogon::utils::base64Decode(body.value("data", std::string())));
+            cb(ok ? jsonResponse(200, json{{"ok", true}}) : jsonResponse(409, json{{"error", "程序没有在运行"}}));
+        });
+        route("/api/webui/programs/resize", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
+            if (auto programs = toolsSlot().programs) programs->resize(body.value("id", std::string()), body.value("cols", 120), body.value("rows", 32));
+            cb(jsonResponse(200, json{{"ok", true}}));
+        });
+    }
+
     static constexpr const char* kCookie = "catofficial_session";
     static constexpr std::time_t kSessionLifetime = 7 * 24 * 3600;
 

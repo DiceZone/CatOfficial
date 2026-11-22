@@ -9,6 +9,8 @@
 #include "../app/update/update_service.h"
 #include "../app/platform/update_schedule.h"
 #include "../app/platform/instance_guard.h"
+#include "../app/files/file_store.h"
+#include "../app/terminal/pty.h"
 
 #include <catofficial/bot.h>
 
@@ -20,6 +22,9 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 namespace {
 
@@ -518,6 +523,127 @@ TEST(WindowsPackageNeedsLauncherCoreAndRuntime) {
 TEST(PortProbeSeesAnotherListener) {
     // 随便挑一个大概率空闲的端口：没人监听时不算占用。
     CHECK(!portInUse(1, "127.0.0.1"));
+}
+
+TEST(FileStoreStaysInsideTheInstallRoot) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path() / ("catofficial-files-" + std::to_string(std::time(nullptr)));
+    fs::create_directories(root / "data");
+    files::FileStore store(root, false);
+    bool threw = false;
+    try { store.list("../"); } catch (const files::FileError&) { threw = true; }
+    CHECK(threw);
+    threw = false;
+    try { store.list("/.catofficial"); } catch (const files::FileError&) { threw = true; }
+    CHECK(threw);
+
+    store.write("/data/牌堆.json", "{\"a\":1}");
+    CHECK_EQ(store.read("/data/牌堆.json"), std::string("{\"a\":1}"));
+    const auto listed = store.list("/data");
+    CHECK_EQ(listed.size(), std::size_t(1));
+    CHECK_EQ(listed[0].name, std::string("牌堆.json"));
+
+    // 删除进回收站，还原回原处；回收站目录本身在列表里看不见
+    const auto trashed = store.discard("/data/牌堆.json", false, false, "希亚");
+    CHECK(trashed.has_value());
+    CHECK(!store.exists("/data/牌堆.json"));
+    CHECK_EQ(store.trashList().size(), std::size_t(1));
+    for (const auto& e : store.list("/")) CHECK(e.name != ".catofficial");
+    store.trashRestore(trashed->id, "希亚", false);
+    CHECK(store.exists("/data/牌堆.json"));
+    CHECK(store.trashList().empty());
+
+    // 目录非空时不加 recursive 不让删
+    threw = false;
+    try { store.discard("/data", false, false, "希亚"); } catch (const files::FileError&) { threw = true; }
+    CHECK(threw);
+
+    // 打包再解压：中文文件名原样回来
+    store.compress({"/data"}, "/备份.zip", false, {});
+    CHECK(store.exists("/备份.zip"));
+    CHECK_EQ(store.countEntries("/备份.zip"), std::int64_t(2));
+    store.extract("/备份.zip", "/restore", "utf8", false, {});
+    CHECK_EQ(store.read("/restore/data/牌堆.json"), std::string("{\"a\":1}"));
+    // 已存在时不覆盖
+    threw = false;
+    try { store.extract("/备份.zip", "/restore", "utf8", false, {}); } catch (const files::FileError&) { threw = true; }
+    CHECK(threw);
+    CHECK_EQ(store.peekConflicts("/备份.zip", "/restore", "utf8", 20).size(), std::size_t(1));
+
+    // 操作记录
+    files::OpRecord op;
+    op.action = "write";
+    op.path = "/data/牌堆.json";
+    store.record(op);
+    CHECK_EQ(store.readOps(10).size(), std::size_t(1));
+    fs::remove_all(root);
+}
+
+TEST(FullAccessListsTheWholeMachine) {
+    files::FileStore store(std::filesystem::temp_directory_path(), true);
+    const auto root = store.list("/");
+    CHECK(!root.empty());
+#ifdef _WIN32
+    // Windows 上根目录列出各个盘，路径写成 /C:/...
+    CHECK(std::any_of(root.begin(), root.end(), [](const files::Entry& e) { return e.name == "C:"; }));
+    CHECK(!store.list("/C:/").empty());
+#else
+    CHECK(std::any_of(root.begin(), root.end(), [](const files::Entry& e) { return e.name == "tmp" || e.name == "usr"; }));
+#endif
+}
+
+TEST(PtyRunsACommandAndReadsItsOutput) {
+    terminal::PtyOptions options;
+#ifdef _WIN32
+    options.commandLine = L"cmd.exe /d /c echo catofficial-pty";
+#else
+    options.argv = {"/bin/sh", "-c", "echo catofficial-pty"};
+#endif
+    std::string error;
+    auto pty = terminal::Pty::start(options, error);
+    CHECK(pty != nullptr);
+    if (!pty) return;
+    std::string output;
+    std::vector<char> buffer(4096);
+    for (std::size_t n; (n = pty->read(buffer.data(), buffer.size())) > 0;) output.append(buffer.data(), n);
+    CHECK_EQ(pty->wait(), 0);
+    CHECK(output.find("catofficial-pty") != std::string::npos);
+}
+
+TEST(InteractiveShellSurvivesInput) {
+    // 网页终端的 shell 收到按键后必须还活着（曾经：PowerShell 一收到输入就退出）
+    terminal::PtyOptions options;
+#ifdef _WIN32
+    options.commandLine = L"\"" + std::filesystem::path(fromUtf8(terminal::defaultShell())).wstring() + L"\" -NoLogo";
+#else
+    options.argv = {"/bin/sh", "-i"};
+#endif
+    std::string error;
+    auto pty = terminal::Pty::start(options, error);
+    CHECK(pty != nullptr);
+    if (!pty) return;
+    std::atomic<bool> done{false};
+    std::string output;
+    std::mutex mu;
+    std::thread reader([&] {
+        std::vector<char> buffer(4096);
+        for (std::size_t n; (n = pty->read(buffer.data(), buffer.size())) > 0;) { std::lock_guard lock(mu); output.append(buffer.data(), n); }
+        done = true;
+    });
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    pty->write("echo shell-alive-check\r");
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    const bool aliveAfterInput = !done;
+    pty->write("exit\r");
+    for (int i = 0; i < 50 && !done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (!done) pty->kill();
+    reader.join();
+    pty->wait();
+    std::string seen;
+    { std::lock_guard lock(mu); seen = output; }
+    if (!aliveAfterInput || seen.find("shell-alive-check") == std::string::npos) std::cout << "  shell output: " << seen.substr(0, 400) << "\n";
+    CHECK(aliveAfterInput);
+    CHECK(seen.find("shell-alive-check") != std::string::npos);
 }
 
 }  // namespace
