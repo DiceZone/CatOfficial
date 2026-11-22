@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tan
 import { Toaster } from 'sonner';
 import { api, setUnauthorizedHandler } from '@/lib/api';
 import { Layout } from '@/components/layout/layout';
-import { LoginPage } from '@/pages/login-page';
+import { ChangePasswordPage, LoginPage } from '@/pages/login-page';
 import { DashboardPage } from '@/pages/dashboard-page';
 import { MessagesPage } from '@/pages/messages-page';
 import { BindingsPage } from '@/pages/bindings-page';
@@ -48,11 +48,12 @@ function Shell() {
     return () => window.removeEventListener('hashchange', update);
   }, []);
   React.useEffect(() => {
-    setUnauthorizedHandler(() => client.setQueryData(['session'], { authenticated: false }));
+    setUnauthorizedHandler((next) => client.setQueryData(['session'], next));
   }, [client]);
 
   if (session.isLoading) return null;
   if (!session.data?.authenticated) return <LoginPage />;
+  if (session.data.must_change_password) return <ChangePasswordPage />;
   const Page = PAGES[path];
   return (
     <Layout currentPath={path} onNavigate={(next) => { window.location.hash = next; }}>

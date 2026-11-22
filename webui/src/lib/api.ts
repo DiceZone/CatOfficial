@@ -4,8 +4,11 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-let onUnauthorized: (() => void) | null = null;
-export function setUnauthorizedHandler(handler: () => void) { onUnauthorized = handler; }
+export interface Session { authenticated: boolean; must_change_password?: boolean }
+
+/// 未登录（401）或必须先修改自动生成的密码（403）时回调，由外层切换到对应页面。
+let onUnauthorized: ((session: Session) => void) | null = null;
+export function setUnauthorizedHandler(handler: (session: Session) => void) { onUnauthorized = handler; }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`./api/webui/${path}`, {
@@ -18,7 +21,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   let data: unknown = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }
   if (!response.ok) {
-    if (response.status === 401 && path !== 'login') onUnauthorized?.();
+    if (response.status === 401 && path !== 'login') onUnauthorized?.({ authenticated: false });
+    if (response.status === 403 && data && typeof data === 'object' && (data as { must_change_password?: boolean }).must_change_password)
+      onUnauthorized?.({ authenticated: true, must_change_password: true });
     const message = data && typeof data === 'object' && 'error' in data ? String((data as { error: unknown }).error) : response.statusText;
     throw new ApiError(response.status, message);
   }
@@ -177,8 +182,52 @@ export interface Settings {
 
 type Saved = { ok: boolean; id?: string; restart_required?: boolean };
 
+// 在线更新（与 Dice!Next 的 /api/system/update 相同的结构）。
+export type UpdateAction = 'notify' | 'download' | 'install';
+export type UpdateSource = 'auto' | 'direct' | 'mirror' | 'custom';
+export interface UpdateSettings {
+  autoCheck: boolean;
+  intervalHours: number;
+  autoAction: UpdateAction;
+  scheduledInstall?: boolean;
+  installTime?: string;
+  source: UpdateSource;
+  customMirror: string;
+}
+export interface UpdateStatus {
+  current: { version: string; build: number; prerelease: boolean; tag: string };
+  platform: { os: string; arch: string };
+  latest: null | {
+    tag: string; version: string; build: number; prerelease: boolean; publishedAt: string; releaseUrl: string; releaseNotes?: string;
+    asset?: { name: string; size: number; sha256: string };
+  };
+  updateAvailable: boolean;
+  phase: string;
+  error: string;
+  source: string;
+  downloadedBytes: number;
+  totalBytes: number;
+  checkedAt: number;
+  downloadSupported?: boolean;
+  installSupported: boolean;
+  scheduledInstallSupported?: boolean;
+  scheduledInstallAt?: number;
+  pendingTag?: string;
+  timezoneMinutes?: number;
+  cancelSupported?: boolean;
+  canCancel?: boolean;
+  selfUpdateBlockedReason?: string;
+  runtime?: { container: boolean; containerType: string; containerDetection: string };
+  pending: boolean;
+  settings: UpdateSettings;
+}
+
 export const api = {
-  session: () => request<{ authenticated: boolean }>('GET', 'session'),
+  session: () => request<Session>('GET', 'session'),
+  changePassword: (password: string) => request<{ ok: boolean }>('POST', 'password', { password }),
+  updateStatus: () => request<UpdateStatus>('GET', 'update'),
+  saveUpdateSettings: (settings: UpdateSettings) => request<UpdateStatus>('PUT', 'update', settings),
+  updateAction: (action: 'check' | 'download' | 'install' | 'cancel') => request<UpdateStatus>('POST', `update/${action}`),
   login: (password: string) => request<{ ok: boolean }>('POST', 'login', { password }),
   logout: () => request<{ ok: boolean }>('POST', 'logout'),
   status: () => request<Status>('GET', 'status'),

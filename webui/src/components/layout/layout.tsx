@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 import { LANGUAGES, setLanguage } from '@/i18n';
 import { Brand } from './brand';
+import { formatVersion } from '@/pages/about-page';
 
 type Icon = React.ComponentType<{ className?: string }>;
 type Section = 'run' | 'manage' | 'system';
@@ -115,6 +116,21 @@ function RestartBanner() {
   );
 }
 
+/// 与 Dice!Next 相同：顶栏显示当前版本，有新版本时带「NEW」标记，点击打开「关于」页的在线更新。
+function VersionButton() {
+  const { t } = useTranslation();
+  const { data } = useQuery({ queryKey: ['update'], queryFn: api.updateStatus, refetchInterval: 60_000 });
+  if (!data) return null;
+  const label = t(data.updateAvailable ? 'layout.new_version' : 'nav.about');
+  return (
+    <button type="button" onClick={() => { window.location.hash = '/about'; }} title={label} aria-label={`${formatVersion(data.current)} · ${label}`}
+      className="hidden items-center gap-1.5 rounded-md px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:inline-flex">
+      {formatVersion(data.current)}
+      {data.updateAvailable && <img src="./new.svg" alt="" className="h-3 w-7 shrink-0" />}
+    </button>
+  );
+}
+
 function Header({ currentPath, onMenu }: { currentPath: string; onMenu: () => void }) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
@@ -134,6 +150,7 @@ function Header({ currentPath, onMenu }: { currentPath: string; onMenu: () => vo
       <Button variant="ghost" size="icon" className="lg:hidden" aria-label={t('header.menu')} onClick={onMenu}><Menu className="h-5 w-5" /></Button>
       <div className="lg:hidden"><Brand compact /></div>
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">{current ? t(current.labelKey) : ''}</span>
+      <VersionButton />
       <Select value={i18n.language} onValueChange={setLanguage}>
         <SelectTrigger className="h-9 w-auto gap-2 border-0 bg-transparent px-2 shadow-none" aria-label={t('header.language')}>
           <Languages className="h-4 w-4" /><span className="hidden sm:inline"><SelectValue /></span>
