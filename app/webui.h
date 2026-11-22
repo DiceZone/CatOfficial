@@ -10,6 +10,7 @@
 #include "panel.h"
 #include "paths.h"
 #include "server.h"
+#include "platform/tray_win.h"
 
 #include <catofficial/qrlogin.h>
 
@@ -45,15 +46,19 @@ public:
         return out;
     }
 
-    /// 首次启动时生成面板密码并写回配置文件。返回是否新生成了密码。
-    static bool ensurePassword(const std::filesystem::path& configPath, Config& config) {
+    /// 首次启动时生成面板密码并写回配置文件。返回是否新生成了密码；@p saved 表示是否写进了文件。
+    static bool ensurePassword(const std::filesystem::path& configPath, Config& config, bool& saved) {
+        saved = true;
         if (!config.webuiEnabled || !config.webuiPassword.empty()) return false;
-        std::ifstream in(configPath, std::ios::binary);
-        auto raw = json::parse(in, nullptr, false);
+        json raw;
+        {   // 读完就关闭：Windows 上文件还开着时无法用改名的方式覆盖它，密码会写不进去。
+            std::ifstream in(configPath, std::ios::binary);
+            raw = json::parse(in, nullptr, false);
+        }
         if (!raw.is_object()) return false;
         config.webuiPassword = randomHex(6);
         raw["webui"]["password"] = config.webuiPassword;
-        writeJson(configPath, migrateConfig(raw));
+        saved = writeJson(configPath, migrateConfig(raw));
         return true;
     }
 
@@ -433,11 +438,15 @@ private:
 
     // ── 配置文件 ───────────────────────────────────────────
 
-    static void writeJson(const std::filesystem::path& path, const json& value) {
+    /// 先写临时文件再改名替换，写一半断电也不会留下损坏的文件。失败返回 false。
+    static bool writeJson(const std::filesystem::path& path, const json& value) {
         const auto temp = utf8(path) + ".tmp";
         { std::ofstream out(fromUtf8(temp), std::ios::binary | std::ios::trunc); out << value.dump(2) << "\n"; }
         std::error_code ec;
         std::filesystem::rename(fromUtf8(temp), path, ec);
+        if (!ec) return true;
+        std::filesystem::remove(fromUtf8(temp), ec);
+        return false;
     }
 
     static json fileConfig() {
@@ -459,9 +468,10 @@ private:
         Config parsed;
         try { parsed = parseConfig(next); }
         catch (const std::exception& e) { return jsonResponse(400, json{{"error", e.what()}}); }
-        writeJson(state().configPath, next);
+        if (!writeJson(state().configPath, next)) return jsonResponse(500, json{{"error", "无法写入配置文件，请确认程序目录可写且文件没有被其他程序占用"}});
         state().hub->apply(parsed);
         Server::applyConnections(parsed.connections);
+        updateSystemTrayText(parsed.trayText);   // 托盘文字保存后立即生效
         const auto& s = state().startup;
         const bool restart = parsed.webuiEnabled != s.webuiEnabled || parsed.webuiHost != s.webuiHost || parsed.webuiPort != s.webuiPort
             || parsed.webuiRoot != s.webuiRoot || parsed.webhookStandalone != s.webhookStandalone || parsed.webhookPath != s.webhookPath
@@ -586,7 +596,10 @@ private:
             {"bind", config.value("bind", json::object())}, {"webui", webui},
             {"masters", config.value("masters", json::array())}, {"notify_masters", config.value("notify_masters", true)},
             {"log_level", config.value("log_level", std::string("info"))},
-            {"message_retention_days", config.value("message_retention_days", 365)}, {"image_cache_days", config.value("image_cache_days", 7)}});
+            {"message_retention_days", config.value("message_retention_days", 365)}, {"image_cache_days", config.value("image_cache_days", 7)},
+            {"tray", json{{"text", config.value("tray", json::object()).value("text", std::string())},
+                          {"start_hidden", config.value("tray", json::object()).value("start_hidden", true)}}},
+            {"tray_supported", tray_settings::supported}, {"tray_port", state().startup.webuiPort}});
     }
 
     static drogon::HttpResponsePtr writeSettings(const json& body) {
@@ -614,6 +627,11 @@ private:
         config.erase("data_dir");
         if (config.contains("bind") && config["bind"].is_object()) config["bind"].erase("email_domain");
         for (const char* key : {"log_level", "message_retention_days", "image_cache_days", "masters", "notify_masters"}) if (body.contains(key)) config[key] = body[key];
+        if (body.contains("tray") && body["tray"].is_object()) {
+            const auto& tray = body["tray"];
+            if (tray.contains("text") && !tray["text"].is_string()) return jsonResponse(400, json{{"error", "托盘文字必须是字符串"}});
+            config["tray"] = json{{"text", tray.value("text", std::string())}, {"start_hidden", tray.value("start_hidden", true)}};
+        }
         return commit(config);
     }
 

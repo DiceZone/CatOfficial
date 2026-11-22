@@ -437,6 +437,22 @@ TEST(MastersMustNameABot) {
     CHECK_EQ(c.imageCacheDays, 7);
 }
 
+TEST(TrayTextIsTrimmedAndLimited) {
+    auto c = parseConfig(json::object());
+    CHECK(c.trayStartHidden);
+    CHECK_EQ(c.trayText, std::string());
+    c = parseConfig(json{{"tray", json{{"text", "  希亚的官机  "}, {"start_hidden", false}}}});
+    CHECK_EQ(c.trayText, std::string("希亚的官机"));
+    CHECK(!c.trayStartHidden);
+    CHECK_EQ(tray_settings::tooltip("", 18082), std::string("CatOfficial(18082)"));
+    bool threw = false;
+    try { parseConfig(json{{"tray", json{{"text", "一二三四五六七八九十十一"}}}}); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+    threw = false;
+    try { parseConfig(json{{"tray", json{{"text", "a\nb"}}}}); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+}
+
 }  // namespace
 
 int main() {

@@ -8,6 +8,7 @@
 //         每个连接可以指定服务哪些官方机器人，留空表示全部。
 
 #include <nlohmann/json.hpp>
+#include "platform/tray_settings.h"
 
 #include <cstdint>
 #include <set>
@@ -114,6 +115,9 @@ struct Config {
     int messageRetentionDays = 365;     // 聊天记录保留天数
     int imageCacheDays = 7;             // 图片缓存保留天数
 
+    std::string trayText;               // Windows 托盘提示文字，留空用 CatOfficial，自动追加面板端口
+    bool trayStartHidden = true;        // 启动后最小化到托盘（隐藏控制台，退出走托盘）
+
     const BotConfig* bot(const std::string& id) const {
         for (const auto& b : bots) if (b.id == id) return &b;
         return nullptr;
@@ -138,7 +142,8 @@ inline const char* kConfigTemplate = R"({
   "webui": { "enabled": true, "host": "127.0.0.1", "port": 18082, "password": "", "root": "web" },
   "log_level": "info",
   "message_retention_days": 365,
-  "image_cache_days": 7
+  "image_cache_days": 7,
+  "tray": { "text": "", "start_hidden": true }
 }
 )";
 
@@ -320,6 +325,11 @@ inline Config parseConfig(const nlohmann::json& input) {
     c.messageRetentionDays = j.value("message_retention_days", c.messageRetentionDays);
     c.imageCacheDays = j.value("image_cache_days", c.imageCacheDays);
     if (c.messageRetentionDays < 0 || c.imageCacheDays < 0) throw std::runtime_error("保留天数不能为负数");
+
+    const auto tray = j.value("tray", json::object());
+    c.trayStartHidden = tray.value("start_hidden", c.trayStartHidden);
+    std::string trayError;
+    if (!tray_settings::normalize(tray.value("text", std::string()), c.trayText, trayError)) throw std::runtime_error(trayError);
     return c;
 }
 

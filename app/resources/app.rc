@@ -1,0 +1,2 @@
+// CatOfficial application icon (also used by the tray icon: LoadIcon(…, 1)).
+1 ICON "app.ico"

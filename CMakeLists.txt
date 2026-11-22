@@ -31,7 +31,17 @@ if(CATOFFICIAL_BUILD_APP OR CATOFFICIAL_BUILD_TESTS)
     find_package(CURL CONFIG REQUIRED)
     find_package(ixwebsocket CONFIG REQUIRED)
 
+    # 版本号：发布时 CI 传入 -DCATOFFICIAL_BUILD=N，显示为 0.1.0-beta.N；本地编译为 0，显示 0.1.0。
+    set(CATOFFICIAL_BUILD 0 CACHE STRING "Release build number (0 for local builds)")
+    if(CATOFFICIAL_BUILD GREATER 0)
+        set(CATOFFICIAL_VERSION_STRING "${PROJECT_VERSION}-beta.${CATOFFICIAL_BUILD}")
+    else()
+        set(CATOFFICIAL_VERSION_STRING "${PROJECT_VERSION}")
+    endif()
+    configure_file(app/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/catofficial_version.h @ONLY)
+
     add_library(catofficial_app_deps INTERFACE)
+    target_include_directories(catofficial_app_deps INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_link_libraries(catofficial_app_deps INTERFACE
         catofficial::core Drogon::Drogon nlohmann_json::nlohmann_json
         OpenSSL::SSL OpenSSL::Crypto unofficial::sqlite3::sqlite3 CURL::libcurl ixwebsocket::ixwebsocket)
@@ -40,6 +50,11 @@ endif()
 if(CATOFFICIAL_BUILD_APP)
     add_executable(catofficial app/main.cpp app/platform/system_info.cpp)
     target_link_libraries(catofficial PRIVATE catofficial_app_deps)
+    if(WIN32)
+        # 程序图标（托盘也用它）与版本信息。
+        enable_language(RC)
+        target_sources(catofficial PRIVATE app/resources/app.rc app/resources/version.rc)
+    endif()
 endif()
 
 if(CATOFFICIAL_BUILD_TESTS)

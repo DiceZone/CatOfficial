@@ -8,6 +8,7 @@
 #include "onebot.h"
 #include "paths.h"
 #include "store.h"
+#include "catofficial_version.h"
 
 #include <catofficial/bot.h>
 
@@ -31,7 +32,7 @@
 
 namespace catofficial::app {
 
-inline constexpr const char* kVersion = "0.1.0";
+inline constexpr const char* kVersion = CATOFFICIAL_VERSION_STRING;
 
 class Relay : public std::enable_shared_from_this<Relay> {
 public:

@@ -1,0 +1,36 @@
+// Version resource for catofficial.exe.
+// The numbers come from the generated catofficial_version.h, so the file
+// properties Windows shows match the version the program prints.
+// Keep this file pure ASCII: rc.exe is not compiled with /utf-8.
+
+#include <winresrc.h>
+#include "catofficial_version.h"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    CATOFFICIAL_VER_MAJOR,CATOFFICIAL_VER_MINOR,CATOFFICIAL_VER_PATCH,CATOFFICIAL_VER_BUILD
+ PRODUCTVERSION CATOFFICIAL_VER_MAJOR,CATOFFICIAL_VER_MINOR,CATOFFICIAL_VER_PATCH,CATOFFICIAL_VER_BUILD
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "DiceZone"
+            VALUE "FileDescription",  "CatOfficial"
+            VALUE "FileVersion",      CATOFFICIAL_VERSION_STRING
+            VALUE "InternalName",     "catofficial"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 DiceZone. Licensed under AGPL-3.0-only."
+            VALUE "OriginalFilename", "catofficial.exe"
+            VALUE "ProductName",      "CatOfficial"
+            VALUE "ProductVersion",   CATOFFICIAL_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

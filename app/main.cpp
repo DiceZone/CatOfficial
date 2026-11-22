@@ -1,11 +1,12 @@
 // CatOfficial：把 QQ 官方机器人中继成标准 OneBot V11。
-// 用法：catofficial [配置文件路径]，默认读取当前目录的 config.json；不存在时生成并照常启动，
+// 用法：catofficial [配置文件路径]，默认读取程序所在目录的 config.json；不存在时生成并照常启动，
 // 可以在管理面板里添加机器人与连接。
 
 #include "config.h"
 #include "hub.h"
 #include "logbuf.h"
 #include "paths.h"
+#include "platform/tray_win.h"
 #include "server.h"
 #include "store.h"
 #include "webui.h"
@@ -63,12 +64,13 @@ catofficial::Logger makeLogger() {
 }
 
 /// 面板请求重启：等端口释放后以相同参数重新启动自己。
-void relaunch(char** argv) {
+void relaunch(char** argv, const std::filesystem::path& configPath) {
 #ifdef _WIN32
     (void)argv;
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::wstring command = GetCommandLineW();
+    // 当前目录已切到程序所在目录，配置文件改用绝对路径传下去。
+    std::wstring command = L"\"" + std::wstring(exe) + L"\" \"" + configPath.wstring() + L"\"";
     std::vector<wchar_t> buffer(command.begin(), command.end());
     buffer.push_back(L'\0');
     SetEnvironmentVariableW(L"CATOFFICIAL_RESTARTED", L"1");
@@ -78,6 +80,7 @@ void relaunch(char** argv) {
         CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
     }
 #else
+    (void)configPath;
     setenv("CATOFFICIAL_RESTARTED", "1", 1);
     execv("/proc/self/exe", argv);
     execvp(argv[0], argv);
@@ -98,7 +101,17 @@ int main(int argc, char** argv) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     ix::initNetSystem();
     std::error_code ec;
-    const fs::path configPath = fs::absolute(fromUtf8(argc > 1 ? argv[1] : "config.json"), ec);
+    // 命令行给的路径按启动时的当前目录解析；之后在 Windows 上切到程序所在目录，
+    // 这样双击、开机自启动（当前目录是 System32）都读写程序旁边的 config.json 与 data。
+    fs::path configPath = argc > 1 ? fs::absolute(fromUtf8(argv[1]), ec) : fs::path();
+#ifdef _WIN32
+    {
+        wchar_t exe[MAX_PATH];
+        const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) fs::current_path(fs::path(std::wstring(exe, n)).parent_path(), ec);
+    }
+#endif
+    if (configPath.empty()) configPath = fs::absolute("config.json", ec);
     if (!fs::exists(configPath)) {
         std::ofstream(configPath, std::ios::binary) << kConfigTemplate;
         std::cout << "已生成配置文件 " << utf8(configPath) << "。" << std::endl;
@@ -116,7 +129,8 @@ int main(int argc, char** argv) {
     LogBuffer::get().setMinimum(config.logLevel);
     const auto log = makeLogger();
     LogBuffer::get().setLogger(log);
-    const bool newPassword = WebUi::ensurePassword(configPath, config);
+    bool passwordSaved = true;
+    const bool newPassword = WebUi::ensurePassword(configPath, config, passwordSaved);
     // 数据目录固定为配置文件旁的 data。
     const fs::path dataDir = configPath.parent_path() / "data";
     fs::create_directories(dataDir, ec);
@@ -152,7 +166,10 @@ int main(int argc, char** argv) {
     if (config.webuiEnabled) {
         const auto host = config.webuiHost == "0.0.0.0" ? std::string("127.0.0.1") : config.webuiHost;
         log(catofficial::LogLevel::info, "管理面板：http://" + host + ":" + std::to_string(config.webuiPort) + "/");
-        if (newPassword) log(catofficial::LogLevel::info, "已生成管理面板密码：" + config.webuiPassword + "（已写入配置文件 webui.password，可在面板中修改）");
+        if (newPassword && passwordSaved)
+            log(catofficial::LogLevel::info, "已生成管理面板密码：" + config.webuiPassword + "（已写入配置文件 webui.password，可在面板中修改）");
+        else if (newPassword)
+            log(catofficial::LogLevel::warn, "已生成管理面板密码：" + config.webuiPassword + "，但写入配置文件失败，下次启动会重新生成。请确认程序目录可写");
         if (config.webuiHost != "127.0.0.1" && config.webuiHost != "localhost" && config.webuiHost != "::1")
             log(catofficial::LogLevel::warn, "管理面板监听在 " + config.webuiHost + "，其他机器也能访问，请使用足够强的密码");
     }
@@ -162,13 +179,19 @@ int main(int argc, char** argv) {
         hub->start();
         Server::startClients();
     });
+    // Windows 托盘：打开应用目录 / 显示·隐藏控制台 / 打开网页面板 / 开机自启动 / 退出。
+    // 默认启动即最小化到托盘（隐藏控制台、弹气泡、禁用控制台的关闭按钮）；tray.start_hidden=false 时保留控制台。
+    // 刚生成面板密码的那次启动保留控制台，让人看得到密码。
+    startSystemTray(config.webuiPort, [] { drogon::app().quit(); }, config.trayStartHidden && !newPassword, config.trayText);
+
     drogon::app().run();
+    stopSystemTray();
     hub->stop();
     ImageCache::get().stop();
     curl_global_cleanup();
     if (WebUi::restartRequested()) {
         log(catofficial::LogLevel::info, "正在重启");
-        relaunch(argv);
+        relaunch(argv, configPath);
     }
     return 0;
 }
