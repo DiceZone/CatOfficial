@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { Activity, Bot, Images, Info, Languages, Link2, LogOut, Menu, MessageSquareReply, MessageSquareText, MessagesSquare, Moon, PlugZap, RotateCw, ScrollText, SlidersHorizontal, Sun, X } from 'lucide-react';
+import { Activity, Bot, Boxes, FolderOpen, Images, Info, Languages, Link2, LogOut, Menu, MessageSquareReply, MessageSquareText, MessagesSquare, Moon, PlugZap, RotateCw, ScrollText, SlidersHorizontal, SquareTerminal, Sun, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -26,6 +26,9 @@ const NAV: NavItem[] = [
   { path: '/replies', labelKey: 'nav.replies', icon: MessageSquareReply, section: 'manage' },
   { path: '/materials', labelKey: 'nav.materials', icon: Images, section: 'manage' },
   { path: '/bindings', labelKey: 'nav.bindings', icon: Link2, section: 'manage' },
+  { path: '/files', labelKey: 'nav.files', icon: FolderOpen, section: 'system' },
+  { path: '/terminal', labelKey: 'nav.terminal', icon: SquareTerminal, section: 'system' },
+  { path: '/programs', labelKey: 'nav.programs', icon: Boxes, section: 'system' },
   { path: '/settings', labelKey: 'nav.settings', icon: SlidersHorizontal, section: 'system' },
   { path: '/about', labelKey: 'nav.about', icon: Info, section: 'system' },
 ];

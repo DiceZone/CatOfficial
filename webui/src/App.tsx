@@ -15,6 +15,10 @@ import { AboutPage } from '@/pages/about-page';
 import { ChatPage } from '@/pages/chat-page';
 import { RepliesPage } from '@/pages/replies-page';
 import { MaterialsPage } from '@/pages/materials-page';
+import { FilesPage } from '@/pages/files-page';
+import { TerminalPage } from '@/pages/terminal-page';
+import { ProgramsPage } from '@/pages/programs-page';
+import { StyledDialogProvider } from '@/components/styled-dialog';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
 
@@ -28,6 +32,9 @@ const PAGES: Record<string, React.FC> = {
   '/materials': MaterialsPage,
   '/logs': LogsPage,
   '/bindings': BindingsPage,
+  '/files': FilesPage,
+  '/terminal': TerminalPage,
+  '/programs': ProgramsPage,
   '/settings': SettingsPage,
   '/about': AboutPage,
 };
@@ -65,7 +72,9 @@ function Shell() {
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Shell />
+      <StyledDialogProvider>
+        <Shell />
+      </StyledDialogProvider>
       <Toaster richColors position="top-right" />
     </QueryClientProvider>
   );

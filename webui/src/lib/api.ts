@@ -10,7 +10,7 @@ export interface Session { authenticated: boolean; must_change_password?: boolea
 let onUnauthorized: ((session: Session) => void) | null = null;
 export function setUnauthorizedHandler(handler: (session: Session) => void) { onUnauthorized = handler; }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`./api/webui/${path}`, {
     method,
     credentials: 'same-origin',
