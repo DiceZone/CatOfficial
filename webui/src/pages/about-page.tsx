@@ -49,7 +49,7 @@ export function AboutPage() {
   return (
     <>
       <PageHeader title={t('about.title')} />
-      <div className="max-w-3xl space-y-6">
+      <div className="space-y-6">
         <Card>
           <CardContent className="space-y-4">
             <Brand />

@@ -79,7 +79,8 @@ export function Layout({ children, currentPath, onNavigate }: LayoutProps) {
         <Header currentPath={currentPath} onMenu={() => setMenuOpen(true)} />
         <RestartBanner />
         <main className="v2-main flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 xl:p-9">
-          <div className="v2-workspace space-y-6">{children}</div>
+          {/* 与 DN 的 v2 工作区相同：页面根元素上残留的 v1 宽度限制（max-w-2xl 之类）一律不生效 */}
+          <div className="v2-workspace space-y-6 [&>*]:max-w-none">{children}</div>
         </main>
       </div>
     </div>
