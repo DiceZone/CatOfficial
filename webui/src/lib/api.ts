@@ -169,6 +169,9 @@ export interface Settings {
   log_level?: string;
   message_retention_days?: number;
   image_cache_days?: number;
+  tray?: { text?: string; start_hidden?: boolean };
+  tray_supported?: boolean;
+  tray_port?: number;
   new_password?: string;
 }
 

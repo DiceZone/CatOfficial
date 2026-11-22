@@ -327,7 +327,17 @@
     "image_cache_days": "Image cache retention (days)",
     "image_cache_usage": "{{files}} images cached, {{size}} in total.",
     "image_cache_clear": "Clear cache",
-    "image_cache_cleared": "Deleted {{n}} cached images"
+    "image_cache_cleared": "Deleted {{n}} cached images",
+    "tray_title": "Windows tray",
+    "tray_desc": "On Windows the program shows an icon in the notification area. Its menu opens the program folder, shows or hides the console, opens the web panel, toggles start with Windows, and exits.",
+    "tray_label": "Tray tooltip",
+    "tray_hint": "Shown when hovering the tray icon. Up to 10 characters; leave empty for CatOfficial. The panel port is appended automatically.",
+    "tray_preview": "Tooltip preview:",
+    "tray_limit": "The tooltip can have at most 10 characters (excluding the port).",
+    "tray_invalid": "The tooltip cannot contain line breaks or control characters.",
+    "tray_unsupported": "This server is not running on Windows, so there is no tray and these settings have no effect.",
+    "tray_start_hidden": "Minimize to tray on start",
+    "tray_start_hidden_hint": "Hides the console window at startup and disables its close button; use Exit in the tray menu to quit. Takes effect on the next start."
   },
   "about": {
     "title": "About",

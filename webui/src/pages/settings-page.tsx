@@ -14,6 +14,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { api, botLabel, type Settings } from '@/lib/api';
 
 const isEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+const TRAY_TEXT_LIMIT = 10;
+const trayLength = (v: string) => [...v.trim()].length;
+const trayInvalid = (v: string) => /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(v.trim());
 
 export function SettingsPage() {
   const { t } = useTranslation();
@@ -32,12 +35,16 @@ export function SettingsPage() {
     setS((prev) => (prev ? { ...prev, [section]: { ...prev[section], ...value } } : prev));
   const set = (value: Partial<Settings>) => setS((prev) => (prev ? { ...prev, ...value } : prev));
   const masters = s.masters ?? [];
+  const tray = { text: s.tray?.text ?? '', start_hidden: s.tray?.start_hidden ?? true };
+  const setTray = (value: Partial<typeof tray>) => set({ tray: { ...tray, ...value } });
+  const trayError = trayLength(tray.text) > TRAY_TEXT_LIMIT ? 'limit' : trayInvalid(tray.text) ? 'invalid' : '';
   const setMasters = (list: NonNullable<Settings['masters']>) => set({ masters: list });
 
   const save = async () => {
     setBusy(true);
     try {
       if (masters.some((m) => m.openid.trim() && !m.bot_id)) { toast.error(t('settings.master_need_bot')); return; }
+      if (trayError) { toast.error(t(`settings.tray_${trayError}`)); return; }
       const r = await api.saveSettings({ ...s, masters: masters.filter((m) => m.openid.trim()), new_password: newPassword });
       setNewPassword('');
       toast.success(t('common.saved'));
@@ -154,6 +161,26 @@ export function SettingsPage() {
           <Field label={t('settings.new_password')} hint={t('settings.new_password_hint')} id="new-password">
             <Input id="new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
           </Field>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>{t('settings.tray_title')}</CardTitle><CardDescription>{t('settings.tray_desc')}</CardDescription></CardHeader>
+        <CardContent className="space-y-5">
+          {!s.tray_supported && <p className="text-sm text-muted-foreground">{t('settings.tray_unsupported')}</p>}
+          <div className="grid gap-5 md:grid-cols-3">
+            <Field label={t('settings.tray_label')} id="tray-text">
+              <Input id="tray-text" value={tray.text} placeholder="CatOfficial" disabled={!s.tray_supported} aria-invalid={!!trayError} onChange={(e) => setTray({ text: e.target.value })} />
+              <div className="flex items-start justify-between gap-3 text-xs leading-relaxed text-muted-foreground">
+                <p>{t('settings.tray_hint')}</p><span className="shrink-0">{trayLength(tray.text)}/{TRAY_TEXT_LIMIT}</span>
+              </div>
+              {trayError && <p role="alert" className="text-sm text-destructive">{t(`settings.tray_${trayError}`)}</p>}
+              <p className="text-sm break-words">{t('settings.tray_preview')} <code>{`${tray.text.trim() || 'CatOfficial'}(${s.tray_port ?? s.webui.port ?? 18082})`}</code></p>
+            </Field>
+            <div className="md:col-span-2">
+              <Toggle label={t('settings.tray_start_hidden')} hint={t('settings.tray_start_hidden_hint')} checked={tray.start_hidden} onChange={(v) => setTray({ start_hidden: v })} />
+            </div>
+          </div>
         </CardContent>
       </Card>
 

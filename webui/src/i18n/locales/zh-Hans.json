@@ -327,7 +327,17 @@
     "image_cache_days": "图片缓存保留天数",
     "image_cache_usage": "当前缓存 {{files}} 张，共 {{size}}。",
     "image_cache_clear": "清空缓存",
-    "image_cache_cleared": "已删除 {{n}} 张缓存图片"
+    "image_cache_cleared": "已删除 {{n}} 张缓存图片",
+    "tray_title": "Windows 托盘",
+    "tray_desc": "程序在 Windows 上运行时会在通知区域显示图标，右键可打开应用目录、显示或隐藏控制台、打开网页面板、设置开机自启动与退出。",
+    "tray_label": "托盘提示文字",
+    "tray_hint": "鼠标悬停在托盘图标上时显示。最多 10 个字符；留空使用 CatOfficial。面板端口由程序自动追加。",
+    "tray_preview": "悬停提示预览：",
+    "tray_limit": "提示文字最多 10 个字符（不含自动追加的端口）。",
+    "tray_invalid": "提示文字不能包含换行或控制字符。",
+    "tray_unsupported": "当前服务器不是 Windows，不使用系统托盘，以下设置不会生效。",
+    "tray_start_hidden": "启动后最小化到托盘",
+    "tray_start_hidden_hint": "启动时隐藏控制台窗口并禁用其关闭按钮，退出请使用托盘菜单中的「退出」。下次启动时生效。"
   },
   "about": {
     "title": "关于",
