@@ -12,13 +12,25 @@ CatOfficial 把 QQ 官方机器人转接为标准 OneBot V11，让原本面向 O
 
 ## 快速开始
 
-从 [Releases](https://github.com/DiceZone/CatOfficial/releases) 下载对应系统的压缩包（Windows x64 / ARM64、Linux x86_64 / ARM64、macOS Apple 芯片），解压后运行：
+从 [Releases](https://github.com/DiceZone/CatOfficial/releases) 下载对应系统的压缩包（Windows x64 / ARM64、Linux x86_64 / ARM64、macOS Apple 芯片），解压出 `CatOfficial-beta` 文件夹后运行其中的 `catofficial`（Windows 上双击 `catofficial.exe`）：
 
 ```
-catofficial [配置文件]
+CatOfficial-beta/
+├── catofficial(.exe)      启动器：安装已下载的更新后拉起主程序
+├── app/                   Windows：主程序 catofficial-core.exe 与全部依赖、运行库
+├── catofficial-core       Linux / macOS：主程序
+├── web/                   管理面板
+├── update-mirrors.json    在线更新的加速镜像列表
+├── config.json            首次运行生成
+└── data/                  首次运行生成
 ```
 
-第一次运行会生成 `config.json` 并照常启动（Windows 上放在程序旁边，其他系统放在当前目录）。打开控制台里显示的管理面板地址（默认 `http://127.0.0.1:18082/`，密码也显示在控制台），在「登录管理」里添加官方机器人（填 AppID 与 AppSecret，或直接扫码登录），在「连接管理」里添加 OneBot 连接即可。
+第一次运行会在安装目录生成 `config.json` 并照常启动。打开控制台里显示的管理面板地址（默认 `http://127.0.0.1:18082/`），用控制台里显示的密码登录（也写在 `config.json` 的 `webui.password` 里），按提示改成自己的密码；之后在「登录管理」里添加官方机器人（填 AppID 与 AppSecret，或直接扫码登录），在「连接管理」里添加 OneBot 连接即可。
+
+- 同一套数据（同一个安装目录）只能运行一个进程，重复启动会自动退出。
+- 面板端口被占用时自动顺延到下一个空闲端口并写回配置；OneBot 连接的端口被占用时，该连接显示「端口已被其他程序占用」，不会与别的程序抢同一个端口。
+- 不要在压缩包里直接运行，也不要把程序放在临时目录里（Windows 上会提示并拒绝启动）。
+- 开发时也可以直接运行主程序：`catofficial-core [配置文件]`，此时不支持在线安装更新。
 
 ## 管理面板
 
@@ -184,6 +196,17 @@ CatOfficial 状态
 "tray": { "text": "", "start_hidden": true }
 ```
 
+## 在线更新
+
+面板「关于」里可以检查新版本、下载并安装，也可以设置自动检查间隔与发现新版本后的动作（仅通知 / 自动下载 / 自动安装并重启，可指定每天的安装时间）。流程与 [Dice!Next](https://github.com/DiceZone/Dice-Next) 相同：
+
+1. 从 GitHub Release 读取 `update-manifest.json`，同时试 GitHub 直连与 `update-mirrors.json` 里的加速镜像，用最先成功的来源；
+2. 下载本平台的安装包，核对大小与 SHA-256；
+3. 解压到 `updates/pending`；
+4. 安装时主程序退出，由启动器替换程序文件（旧文件保留在 `updates/rollbacks`，失败自动回滚）后拉起新版本。
+
+`config.json` 与 `data` 不在安装包里，更新不会碰到。检测到在容器里运行时只提示新版本，请更新镜像后重建容器。Linux / macOS 用 systemd 或 launchd 守护时，请让它运行 `catofficial`（管理程序）而不是 `catofficial-core`。
+
 ## 构建
 
 需要 CMake 3.21+、C++20，以及 [Drogon](https://github.com/drogonframework/drogon)、[IXWebSocket](https://github.com/machinezone/IXWebSocket)、[nlohmann/json](https://github.com/nlohmann/json)、OpenSSL、SQLite3、libcurl（`vcpkg.json` 已列出）。
@@ -193,7 +216,7 @@ cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cm
 cmake --build build --config Release
 ```
 
-产物为 `catofficial` 与单元测试 `catofficial-tests`。`-DCATOFFICIAL_BUILD=N` 可指定构建号，版本显示为 `0.1.0-beta.N`。
+产物为启动器 `catofficial`、主程序 `catofficial-core` 与单元测试 `catofficial-tests`。`-DCATOFFICIAL_BUILD=N` 可指定构建号，版本显示为 `0.1.0-beta.N`。
 
 推送到 `main` 时 GitHub Actions 会自动编译前后端并运行测试（`.github/workflows/ci.yml`）；在 Actions 页面手动运行「Release CatOfficial」会编译全部平台的安装包并发布 Release（`.github/workflows/release.yml`）。本地打包可用 `scripts/package-windows.ps1` 与 `scripts/package-unix.sh`。
 
