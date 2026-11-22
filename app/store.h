@@ -112,7 +112,7 @@ public:
         {
             Statement s(db_, "SELECT MAX(number) FROM identities WHERE kind=? AND number>? AND number<?");
             s.bind(1, kindName(kind)); s.bind(2, base); s.bind(3, base + kGroupBase);
-            if (s.step() && sqlite3_column_type(s.raw(), 0) != SQLITE_NULL) last = (std::max)(last, sqlite3_column_int64(s.raw(), 0));
+            if (s.step() && sqlite3_column_type(s.raw(), 0) != SQLITE_NULL) last = (std::max)(last, static_cast<int64_t>(sqlite3_column_int64(s.raw(), 0)));
         }
         const int64_t next = last + 1;
         {
