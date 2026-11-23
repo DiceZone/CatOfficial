@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft, AtSign, Ban, Check, ExternalLink, FileText, ImageOff, ImagePlus, Link2, Loader2, MessageCircle, MessagesSquare,
-  MoreHorizontal, PanelRight, Quote, RefreshCw, Search, ShieldOff, User, UserMinus, Users, VolumeX, X,
+  Smile, MoreHorizontal, PanelRight, Quote, RefreshCw, Search, ShieldOff, User, UserMinus, Users, VolumeX, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,8 @@ import { useConfirm } from '@/components/confirm-dialog';
 import { MarkdownView } from '@/components/markdown/markdown-view';
 import { MarkdownEditorDialog, MarkdownInsertContext } from '@/components/markdown/markdown-editor-dialog';
 import { api, botLabel, fileToBase64, type Bot, type ChatMember, type ChatPeer, type Conversation, type MessageRow } from '@/lib/api';
+import { ChatText, StickerPicker } from '@/components/chat-stickers';
+import { saveSticker } from '@/lib/chat-stickers';
 import { cn } from '@/lib/utils';
 
 const GROUP_SECONDS = 5 * 60;
@@ -94,7 +96,7 @@ function MessageItem({ m, prev, onImage, onQuote, quoted }: {
                 </div>
               )}
               {m.parts.map((p, i) => {
-                if (p.type === 'text') return p.text ? <span key={i} className="whitespace-pre-wrap">{p.text}</span> : null;
+                if (p.type === 'text') return p.text ? <ChatText key={i} text={p.text} /> : null;
                 if (p.type === 'markdown') return <MarkdownView key={i} text={p.text} onImage={onImage} />;
                 if (p.type === 'image') return <ChatImage key={i} src={p.src} onOpen={onImage} />;
                 return null;
@@ -384,6 +386,8 @@ export function ChatPage() {
   const [text, setText] = React.useState('');
   const [quote, setQuote] = React.useState<MessageRow | null>(null);
   const [sending, setSending] = React.useState(false);
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [savingSticker, setSavingSticker] = React.useState(false);
   const [mdOpen, setMdOpen] = React.useState(false);
   const [preview, setPreview] = React.useState<string | null>(null);
   const [sideOpen, setSideOpen] = React.useState(true);
@@ -466,7 +470,27 @@ export function ChatPage() {
   const sendImage = async (file?: File) => {
     if (!file) return;
     if (!file.type.startsWith('image/') || file.size > 20 * 1024 * 1024) { toast.error(t('chat.image_limit')); return; }
-    await send({ image: { name: file.name, base64: await fileToBase64(file) } });
+    try { await send({ image: { name: file.name, base64: await fileToBase64(file) } }); }
+    catch (e) { toast.error(t('chat.send_failed', { error: errorText(e) })); }
+  };
+  const addSticker = async (source: File | string) => {
+    setSavingSticker(true);
+    try {
+      let file: File;
+      if (typeof source === 'string') {
+        const response = await fetch(source, { referrerPolicy: 'no-referrer' });
+        if (!response.ok) throw new Error(t('chat.image_expired'));
+        const blob = await response.blob();
+        const extension = blob.type.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'png';
+        file = new File([blob], `sticker.${extension}`, { type: blob.type });
+      } else file = source;
+      if (!file.type.startsWith('image/') || !file.size || file.size > 20 * 1024 * 1024)
+        throw new Error(t('chat.image_limit'));
+      await saveSticker(file);
+      void client.invalidateQueries({ queryKey: ['chat-stickers'] });
+      toast.success(t('chat.sticker_saved'));
+    } catch (e) { toast.error(t('common.failed', { error: errorText(e) })); }
+    finally { setSavingSticker(false); }
   };
   const insertText = (snippet: string) => {
     const area = input.current;
@@ -566,6 +590,7 @@ export function ChatPage() {
               {/* 输入区：上面一排工具，下面是输入框，发送在右下角 */}
               <footer className="flex h-44 shrink-0 flex-col border-t">
                 <div className="flex items-center gap-1 px-3 pt-2">
+                  <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t('chat.faces')} title={t('chat.faces')} disabled={sending || !bot} onClick={() => setPickerOpen(true)}><Smile className="h-[18px] w-[18px]" /></Button>
                   <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t('chat.send_image')} title={t('chat.send_image')} disabled={sending || !bot} onClick={() => fileInput.current?.click()}><ImagePlus className="h-[18px] w-[18px]" /></Button>
                   <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t('chat.send_markdown')} title={t('chat.send_markdown')} disabled={sending || !bot} onClick={() => setMdOpen(true)}><FileText className="h-[18px] w-[18px]" /></Button>
                   {group && <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t('chat.at_all')} title={`${t('chat.at_all')}：${t('chat.at_all_hint')}`} disabled={sending || !bot} onClick={() => insertText('<qqbot-at-everyone /> ')}><AtSign className="h-[18px] w-[18px]" /></Button>}
@@ -595,6 +620,8 @@ export function ChatPage() {
         </>}
       </section>
 
+      {current && <StickerPicker open={pickerOpen} onOpenChange={setPickerOpen} onFace={insertText}
+        onSticker={(file) => void sendImage(file)} onUpload={(file) => void addSticker(file)} />}
       <MarkdownEditorDialog open={mdOpen} onOpenChange={setMdOpen} title={t('chat.markdown_title')} description={t('chat.markdown_hint')}
         submitLabel={t('chat.send')} busy={sending} extra={group ? <AtAllButton /> : undefined}
         onSubmit={async (markdown) => { if (await send({ markdown })) setMdOpen(false); }} />
@@ -605,6 +632,7 @@ export function ChatPage() {
           <DialogTitle className="sr-only">{t('messages.preview')}</DialogTitle>
           {preview && <div className="space-y-2">
             <img src={preview} alt="" referrerPolicy="no-referrer" className="mx-auto max-h-[75vh] w-auto rounded-md object-contain" />
+            <Button variant="outline" size="sm" className="mr-3" disabled={savingSticker} onClick={() => void addSticker(preview)}>{t('chat.save_sticker')}</Button>
             <a href={preview} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">{t('messages.open_original')}<ExternalLink className="h-3 w-3" /></a>
           </div>}
         </DialogContent>

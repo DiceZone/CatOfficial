@@ -72,9 +72,8 @@ export function DashboardPage() {
         <Metric icon={ArrowUpRight} label={t('dashboard.sent')} value={formatNumber(status.sent, locale)} />
         <Metric icon={Clock} label={t('dashboard.uptime')} value={<span className="text-lg">{duration(status.started_at)}</span>} />
       </div>
-      <div className="grid min-w-0 items-stretch gap-6 lg:grid-cols-[minmax(300px,0.85fr)_minmax(0,1.65fr)]">
+      <div className="grid min-w-0 grid-cols-1 gap-6">
         <div className="flex min-h-[22rem] min-w-0 flex-col"><ServerInfo /></div>
-        <div className="min-w-0 space-y-6">
         <Card>
           <CardHeader><CardTitle>{t('dashboard.bots')}</CardTitle></CardHeader>
           <CardContent className="space-y-3">
@@ -123,7 +122,6 @@ export function DashboardPage() {
             })}
           </CardContent>
         </Card>
-        </div>
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Metric icon={Users} label={t('dashboard.users')} value={formatNumber(status.counts.users, locale)} />

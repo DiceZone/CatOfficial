@@ -49,7 +49,8 @@ export function AboutPage() {
   return (
     <>
       <PageHeader title={t('about.title')} />
-      <div className="space-y-6">
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <UpdateCard />
         <Card>
           <CardContent className="space-y-4">
             <Brand />
@@ -66,7 +67,6 @@ export function AboutPage() {
             </div>
           </CardContent>
         </Card>
-        <UpdateCard />
       </div>
     </>
   );

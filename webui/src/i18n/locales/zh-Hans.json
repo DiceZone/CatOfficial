@@ -456,6 +456,11 @@
     "shortcut_hint": "Ctrl+B 粗体，Ctrl+I 斜体，Ctrl+Enter 发送。"
   },
   "chat": {
+    "faces": "QQ 表情",
+    "stickers": "自定义表情",
+    "upload_sticker": "上传表情",
+    "save_sticker": "添加为自定义表情",
+    "sticker_saved": "已添加到自定义表情",
     "title": "在线聊天",
     "description": "查看各会话的消息，并以机器人的身份回复。",
     "search": "搜索会话",

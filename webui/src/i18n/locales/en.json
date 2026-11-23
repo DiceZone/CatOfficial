@@ -456,6 +456,11 @@
     "shortcut_hint": "Ctrl+B bold, Ctrl+I italic, Ctrl+Enter to send."
   },
   "chat": {
+    "faces": "QQ faces",
+    "stickers": "Custom stickers",
+    "upload_sticker": "Upload sticker",
+    "save_sticker": "Save as custom sticker",
+    "sticker_saved": "Sticker saved",
     "title": "Live chat",
     "description": "Read conversations and reply as the bot.",
     "search": "Search conversations",
