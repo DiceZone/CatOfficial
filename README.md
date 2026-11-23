@@ -1,6 +1,20 @@
-<p align="center"><img src="logo.svg" alt="CatOfficial" width="128" /></p>
+<p align="center">
+  <img src=".github/assets/readme-hero.svg" width="100%" alt="CatOfficial · QQ 官方机器人 × OneBot V11" />
+</p>
 
-# CatOfficial
+<p align="center">
+  <a href="https://github.com/DiceZone/CatOfficial/releases"><img src="https://img.shields.io/github/v/release/DiceZone/CatOfficial?include_prereleases&amp;style=flat-square&amp;label=release&amp;color=2082af" alt="最新版本（含预发布）" /></a>
+  <a href="https://github.com/DiceZone/CatOfficial/actions/workflows/ci.yml"><img src="https://github.com/DiceZone/CatOfficial/actions/workflows/ci.yml/badge.svg?branch=main" alt="主分支 CI 状态" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-526878?style=flat-square" alt="AGPL-3.0 许可" /></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/DiceZone/CatOfficial/releases">下载</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#管理面板">管理面板</a> ·
+  <a href="#onebot-连接">OneBot 连接</a> ·
+  <a href="https://github.com/DiceZone/CatOfficial/issues">问题反馈</a>
+</p>
 
 CatOfficial 把 QQ 官方机器人转接为标准 OneBot V11，让原本面向 OneBot 的应用不改代码即可接入官方机器人。
 

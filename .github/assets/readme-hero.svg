@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 220" role="img" aria-labelledby="title">
+  <title id="title">CatOfficial · QQ 官方机器人 × OneBot V11</title>
+  <rect width="960" height="220" rx="18" fill="#10283c"/>
+  <g fill="none" stroke="#2e5871" stroke-width="2">
+    <path d="M0 74h92l36 36h70m-198 27h66l25 25h55M960 66h-85l-48 48h-72m205 38h-82l-22 22h-75"/>
+    <circle cx="202" cy="110" r="4"/><circle cx="751" cy="114" r="4"/>
+  </g>
+  <g transform="translate(180 8) scale(.80)" fill="#42B6EE">
+  <path d="M137 182c16 5 34 2 46-9 13-12 16-29 15-51"
+        fill="none" stroke="#42B6EE" stroke-width="16" stroke-linecap="round"/>
+  <g transform="rotate(12 199 117)">
+    <rect x="184" y="79" width="8" height="25" rx="4"/>
+    <rect x="205" y="79" width="8" height="25" rx="4"/>
+    <path d="M184 95h29a5 5 0 0 1 5 5v8c0 13-8 21-19 21s-20-8-20-21v-8a5 5 0 0 1 5-5Z"/>
+  </g>
+  <path fill-rule="evenodd" d="
+    M39 104 40 61q0-10 9-5l30 18q17-5 34 0l26-24q7-6 10 4l9 41
+    q9 13 9 27 0 17-10 28 11 14 11 31
+    c0 14-10 23-25 23H72c-9 0-14-4-14-10 0-5 4-9 10-11
+    q-1-7 1-13c-22-5-36-21-36-40q0-14 6-26Z
+    M60 119a5.5 5.5 0 0 1 11 0v5a5.5 5.5 0 0 1-11 0Z
+    M108 116a5.5 5.5 0 0 1 11 0v5a5.5 5.5 0 0 1-11 0Z"/>
+  </g>
+  <g font-family="system-ui, sans-serif" x="420">
+    <text x="410" y="112" font-size="59" font-weight="700" fill="#f5fbff">CatOfficial</text>
+    <text x="413" y="154" font-size="21" fill="#9edbf7">QQ 官方机器人 × OneBot V11</text>
+  </g>
+</svg>
