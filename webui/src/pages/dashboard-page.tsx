@@ -1,14 +1,14 @@
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowDownLeft, ArrowUpRight, Clock, Globe, Plug, Radio, Send, Server, Users } from 'lucide-react';
+import { ArrowLeftRight, Boxes, Clock, Globe, Plug, Radio, Send, Server, User, Users } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/page-header';
 import { StatusDot } from '@/components/form';
 import { PlatformIcon, PlatformLabel } from '@/components/platform-icon';
 import { ServerInfo } from '@/components/dashboard/server-info';
-import { api, type Status } from '@/lib/api';
+import { api, request, type Status } from '@/lib/api';
 import { currentLocale } from '@/i18n';
 import { formatNumber } from '@/lib/utils';
 
@@ -59,6 +59,15 @@ export function DashboardPage() {
   const duration = useDuration();
   const locale = currentLocale();
   const { data: status } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
+  const session = useQuery({ queryKey: ['session'], queryFn: api.session });
+  const programsEnabled = session.data?.features?.programs !== false;
+  const instances = useQuery({
+    queryKey: ['programs'],
+    queryFn: () => request<{ programs: { state: string }[] }>('GET', 'programs'),
+    enabled: !!session.data && programsEnabled,
+    refetchInterval: 5000,
+    select: ({ programs }) => `${programs.filter((p) => p.state === 'running').length}/${programs.length}`,
+  });
   if (!status) return <PageHeader title={t('dashboard.title')} description={t('common.loading')} />;
   const officials = status.bots.filter((b) => b.type === 'official' && b.enabled);
   const online = officials.filter((b) => b.runtime?.online).length;
@@ -66,13 +75,15 @@ export function DashboardPage() {
   return (
     <>
       <PageHeader title={t('dashboard.title')} description={t('dashboard.description')} />
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Metric icon={Radio} label={t('dashboard.online_bots')} value={`${online} / ${officials.length}`} />
-        <Metric icon={ArrowDownLeft} label={t('dashboard.received')} value={formatNumber(status.received, locale)} />
-        <Metric icon={ArrowUpRight} label={t('dashboard.sent')} value={formatNumber(status.sent, locale)} />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <Metric icon={Radio} label={t('dashboard.online_bots')} value={`${online}/${officials.length}`} />
+        <Metric icon={ArrowLeftRight} label={t('dashboard.messages')} value={`${formatNumber(status.received, locale)}/${formatNumber(status.sent, locale)}`} />
+        <Metric icon={User} label={t('dashboard.users')} value={formatNumber(status.counts.users, locale)} />
+        <Metric icon={Users} label={t('dashboard.groups')} value={formatNumber(status.counts.groups, locale)} />
+        <Metric icon={Boxes} label={t('dashboard.instances')} value={programsEnabled ? instances.data ?? '—' : t('status.disabled')} />
         <Metric icon={Clock} label={t('dashboard.uptime')} value={<span className="text-lg">{duration(status.started_at)}</span>} />
       </div>
-      <div className="grid min-w-0 grid-cols-1 gap-6">
+      <div className="grid min-w-0 grid-cols-[repeat(3,minmax(17rem,1fr))] items-stretch gap-4 overflow-x-auto pb-1">
         <div className="flex min-h-[22rem] min-w-0 flex-col"><ServerInfo /></div>
         <Card>
           <CardHeader><CardTitle>{t('dashboard.bots')}</CardTitle></CardHeader>
@@ -122,12 +133,6 @@ export function DashboardPage() {
             })}
           </CardContent>
         </Card>
-      </div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Metric icon={Users} label={t('dashboard.users')} value={formatNumber(status.counts.users, locale)} />
-        <Metric icon={Users} label={t('dashboard.groups')} value={formatNumber(status.counts.groups, locale)} />
-        <Metric icon={Users} label={t('dashboard.bound')} value={formatNumber(status.counts.bound, locale)} />
-        <Metric icon={Users} label={t('dashboard.indexed')} value={formatNumber(status.counts.messages, locale)} />
       </div>
     </>
   );
