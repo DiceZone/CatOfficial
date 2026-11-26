@@ -44,12 +44,11 @@ function formatScheduledAt(seconds: number, offsetMinutes: number) {
 }
 
 const CREDITS = [
-  ['dice_next', 'Dice!Next'],
-  ['bdc', 'BDC · 骰子之间'],
-  ['mcsm', 'MCSManager'],
-  ['onebot', 'OneBot V11'],
-  ['napcat', 'NapCat'],
-  ['qface', 'QFace'],
+  ['dice_next', 'Dice!Next', 'https://github.com/DiceZone/Dice-Next'],
+  ['mcsm', 'MCSManager', 'https://github.com/MCSManager/MCSManager'],
+  ['onebot', 'OneBot V11', 'https://github.com/botuniverse/onebot-11'],
+  ['napcat', 'NapCat', 'https://github.com/NapNeko/NapCatQQ'],
+  ['qface', 'QFace', 'https://github.com/koishijs/QFace'],
 ] as const;
 
 export function AboutPage() {
@@ -81,9 +80,13 @@ export function AboutPage() {
             <CardHeader><CardTitle>{t('about.credits.title')}</CardTitle></CardHeader>
             <CardContent>
               <dl className="space-y-3 text-sm">
-                {CREDITS.map(([key, name]) => (
+                {CREDITS.map(([key, name, url]) => (
                   <div key={key}>
-                    <dt className="font-medium">{name}</dt>
+                    <dt className="font-medium">
+                      <a className="inline-flex items-center gap-1 text-primary hover:underline" href={url} target="_blank" rel="noreferrer">
+                        {name}<ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </dt>
                     <dd className="text-muted-foreground">{t(`about.credits.${key}`)}</dd>
                   </div>
                 ))}

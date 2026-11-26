@@ -354,7 +354,6 @@
     "credits": {
       "title": "特别感谢",
       "dice_next": "在线更新流程和首页服务器信息卡片参考了 Dice!Next 的实现。",
-      "bdc": "文件管理、回收站和网页终端移植自「骰子之间」的公寓管理工具。",
       "mcsm": "托管实例的启停、控制台和文件管理参考了 MCSManager 的设计。",
       "onebot": "机器人转接采用 OneBot V11 定义的消息格式、事件和动作。",
       "napcat": "HTTP 和 WebSocket 的四类连接沿用了 NapCat 的分类方式。",
