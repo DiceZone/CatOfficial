@@ -14,10 +14,12 @@ const faces: Record<string, [string, string]> = {
   18: ['抓狂', 'Frustrated'], 20: ['偷笑', 'Giggle'], 21: ['可爱', 'Cute'], 32: ['疑问', 'Puzzled'],
 };
 
-function Face({ id }: { id: string }) {
+export const faceUrl = (id: string) => `./assets/qq-face-s${id}.gif`;
+
+export function Face({ id }: { id: string }) {
   const { i18n } = useTranslation();
   const name = faces[id][i18n.language.startsWith('zh') ? 0 : 1];
-  return <img src={`./assets/qq-face-s${id}.gif`} alt={name} title={name}
+  return <img src={faceUrl(id)} alt={name} title={name}
     referrerPolicy="no-referrer" className="inline-block h-7 w-7 object-contain align-middle" />;
 }
 
@@ -41,7 +43,7 @@ function StickerButton({ file, onPick }: { file: File; onPick: () => void }) {
 }
 
 export function StickerPicker({ open, onOpenChange, onFace, onSticker, onUpload }: {
-  open: boolean; onOpenChange: (open: boolean) => void; onFace: (token: string) => void;
+  open: boolean; onOpenChange: (open: boolean) => void; onFace: (id: string) => void;
   onSticker: (file: File) => void; onUpload: (file: File) => void;
 }) {
   const { t } = useTranslation();
@@ -52,7 +54,7 @@ export function StickerPicker({ open, onOpenChange, onFace, onSticker, onUpload 
       <DialogTitle>{t('chat.faces')}</DialogTitle>
       <div className="grid grid-cols-5 gap-1 sm:grid-cols-10">
         {Object.keys(faces).map((id) => <button key={id} type="button" className="rounded p-1 hover:bg-accent"
-          onClick={() => { onOpenChange(false); onFace(`<emoji:${id}>`); }}><Face id={id} /></button>)}
+          onClick={() => { onOpenChange(false); onFace(id); }}><Face id={id} /></button>)}
       </div>
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-medium">{t('chat.stickers')}</h3>

@@ -43,6 +43,15 @@ function formatScheduledAt(seconds: number, offsetMinutes: number) {
   return `${date.toISOString().slice(0, 16).replace('T', ' ')} (${timezoneLabel(offsetMinutes)})`;
 }
 
+const CREDITS = [
+  ['dice_next', 'Dice!Next'],
+  ['bdc', 'BDC · 骰子之间'],
+  ['mcsm', 'MCSManager'],
+  ['onebot', 'OneBot V11'],
+  ['napcat', 'NapCat'],
+  ['qface', 'QFace'],
+] as const;
+
 export function AboutPage() {
   const { t } = useTranslation();
   const { data: status } = useQuery({ queryKey: ['status'], queryFn: api.status });
@@ -51,22 +60,37 @@ export function AboutPage() {
       <PageHeader title={t('about.title')} />
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <UpdateCard />
-        <Card>
-          <CardContent className="space-y-4">
-            <Brand />
-            <p className="text-sm">{t('about.description')}</p>
-            <p className="text-sm text-muted-foreground">{t('about.version')}：{status?.version ?? '—'}</p>
-            <p className="text-sm text-muted-foreground">{t('about.license')}</p>
-            <div className="flex flex-wrap gap-4 text-sm">
-              <a className="inline-flex items-center gap-1 text-primary hover:underline" href="https://github.com/DiceZone/CatOfficial" target="_blank" rel="noreferrer">
-                {t('about.repo')}<ExternalLink className="h-3.5 w-3.5" />
-              </a>
-              <a className="inline-flex items-center gap-1 text-primary hover:underline" href="https://github.com/botuniverse/onebot-11" target="_blank" rel="noreferrer">
-                {t('about.onebot')}<ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="min-w-0 space-y-6">
+          <Card>
+            <CardContent className="space-y-4">
+              <Brand />
+              <p className="text-sm">{t('about.description')}</p>
+              <p className="text-sm text-muted-foreground">{t('about.version')}：{status?.version ?? '—'}</p>
+              <p className="text-sm text-muted-foreground">{t('about.license')}</p>
+              <div className="flex flex-wrap gap-4 text-sm">
+                <a className="inline-flex items-center gap-1 text-primary hover:underline" href="https://github.com/DiceZone/CatOfficial" target="_blank" rel="noreferrer">
+                  {t('about.repo')}<ExternalLink className="h-3.5 w-3.5" />
+                </a>
+                <a className="inline-flex items-center gap-1 text-primary hover:underline" href="https://github.com/botuniverse/onebot-11" target="_blank" rel="noreferrer">
+                  {t('about.onebot')}<ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader><CardTitle>{t('about.credits.title')}</CardTitle></CardHeader>
+            <CardContent>
+              <dl className="space-y-3 text-sm">
+                {CREDITS.map(([key, name]) => (
+                  <div key={key}>
+                    <dt className="font-medium">{name}</dt>
+                    <dd className="text-muted-foreground">{t(`about.credits.${key}`)}</dd>
+                  </div>
+                ))}
+              </dl>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </>
   );

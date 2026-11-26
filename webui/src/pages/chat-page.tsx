@@ -23,7 +23,7 @@ import { useConfirm } from '@/components/confirm-dialog';
 import { MarkdownView } from '@/components/markdown/markdown-view';
 import { MarkdownEditorDialog, MarkdownInsertContext } from '@/components/markdown/markdown-editor-dialog';
 import { api, botLabel, fileToBase64, type Bot, type ChatMember, type ChatPeer, type Conversation, type MessageRow } from '@/lib/api';
-import { ChatText, StickerPicker } from '@/components/chat-stickers';
+import { ChatText, Face, faceUrl, StickerPicker } from '@/components/chat-stickers';
 import { saveSticker } from '@/lib/chat-stickers';
 import { cn } from '@/lib/utils';
 
@@ -386,6 +386,7 @@ export function ChatPage() {
   const [text, setText] = React.useState('');
   const [quote, setQuote] = React.useState<MessageRow | null>(null);
   const [sending, setSending] = React.useState(false);
+  const [draftFace, setDraftFace] = React.useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [savingSticker, setSavingSticker] = React.useState(false);
   const [mdOpen, setMdOpen] = React.useState(false);
@@ -414,7 +415,7 @@ export function ChatPage() {
   React.useEffect(() => {
     if (!current) return;
     let cancelled = false;
-    setMessages([]); setOlderDone(false); setQuote(null); stick.current = true;
+    setDraftFace(null); setText(''); setMessages([]); setOlderDone(false); setQuote(null); stick.current = true;
     api.chatMessages(current.peer, { limit: 50 }).then((rows) => {
       if (cancelled) return;
       setMessages(rows); setOlderDone(rows.length < 50); scrollToEnd();
@@ -466,7 +467,26 @@ export function ChatPage() {
     } catch (e) { toast.error(t('chat.send_failed', { error: errorText(e) })); return false; }
     finally { setSending(false); }
   };
-  const sendText = async () => { if (text.trim() && await send({ text })) setText(''); };
+  const sendText = async () => {
+    if (sending || (!text.trim() && draftFace === null)) return;
+    if (draftFace === null) {
+      if (await send({ text })) setText('');
+      return;
+    }
+    setSending(true);
+    try {
+      const response = await fetch(faceUrl(draftFace));
+      if (!response.ok) throw new Error(t('chat.image_expired'));
+      const blob = await response.blob();
+      if (blob.type !== 'image/gif') throw new Error(t('chat.image_expired'));
+      const file = new File([blob], `qq-face-${draftFace}.gif`, { type: blob.type });
+      if (await send({ text, image: { name: file.name, base64: await fileToBase64(file) } })) {
+        setDraftFace(null);
+        setText('');
+      }
+    } catch (e) { toast.error(t('chat.send_failed', { error: errorText(e) })); }
+    finally { setSending(false); }
+  };
   const sendImage = async (file?: File) => {
     if (!file) return;
     if (!file.type.startsWith('image/') || file.size > 20 * 1024 * 1024) { toast.error(t('chat.image_limit')); return; }
@@ -603,12 +623,16 @@ export function ChatPage() {
                     <button type="button" aria-label={t('chat.cancel_quote')} onClick={() => setQuote(null)}><X className="h-3.5 w-3.5" /></button>
                   </div>
                 )}
+                {draftFace !== null && <div className="mx-4 flex items-center gap-1">
+                  <Face id={draftFace} />
+                  <button type="button" disabled={sending} aria-label={t('common.remove')} onClick={() => setDraftFace(null)}><X className="h-4 w-4" /></button>
+                </div>}
                 <textarea ref={input} value={text} onChange={(e) => setText(e.target.value)} aria-label={t('chat.placeholder')} placeholder={t('chat.placeholder')}
                   disabled={sending || !bot} spellCheck={false}
                   className="min-h-0 flex-1 resize-none bg-transparent px-4 py-2 text-sm outline-none placeholder:text-muted-foreground/70"
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void sendText(); } }} />
                 <div className="flex justify-end px-4 pb-3">
-                  <Button size="sm" className="min-w-20" disabled={sending || !bot || !text.trim()} onClick={() => void sendText()}>
+                  <Button size="sm" className="min-w-20" disabled={sending || !bot || (!text.trim() && draftFace === null)} onClick={() => void sendText()}>
                     {sending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}{t('chat.send')}
                   </Button>
                 </div>
@@ -620,7 +644,10 @@ export function ChatPage() {
         </>}
       </section>
 
-      {current && <StickerPicker open={pickerOpen} onOpenChange={setPickerOpen} onFace={insertText}
+      {current && <StickerPicker open={pickerOpen} onOpenChange={setPickerOpen} onFace={(id) => {
+        if (current.peer.startsWith('channel:')) insertText(`<emoji:${id}>`);
+        else setDraftFace(id);
+      }}
         onSticker={(file) => void sendImage(file)} onUpload={(file) => void addSticker(file)} />}
       <MarkdownEditorDialog open={mdOpen} onOpenChange={setMdOpen} title={t('chat.markdown_title')} description={t('chat.markdown_hint')}
         submitLabel={t('chat.send')} busy={sending} extra={group ? <AtAllButton /> : undefined}

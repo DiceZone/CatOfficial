@@ -351,6 +351,15 @@
     "tray_start_hidden_hint": "Hides the console window at startup and disables its close button; use Exit in the tray menu to quit. Takes effect on the next start."
   },
   "about": {
+    "credits": {
+      "title": "Special thanks",
+      "dice_next": "The update flow and server information card draw on Dice!Next.",
+      "bdc": "The file manager, recycle bin and web terminal were adapted from BDC’s apartment management tools.",
+      "mcsm": "MCSManager inspired the controls for starting and stopping instances, the console and file management.",
+      "onebot": "The bridge uses OneBot V11’s message formats, events and actions.",
+      "napcat": "The four HTTP and WebSocket connection types follow NapCat’s configuration model.",
+      "qface": "The classic QQ face images in live chat come from QFace."
+    },
     "title": "About",
     "description": "A relay that turns the QQ official bot into a standard OneBot V11 implementation.",
     "version": "Version",
