@@ -5,6 +5,8 @@
 // configurations.  This client resolves through the operating system, while
 // retaining the original hostname for TLS SNI and certificate validation.
 
+#include "ssl_trust.h"
+
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -262,7 +264,7 @@ private:
             SSL_CTX_set_verify(context, SSL_VERIFY_NONE, nullptr);
 #else
             SSL_CTX_set_verify(context, SSL_VERIFY_PEER, nullptr);
-            SSL_CTX_set_default_verify_paths(context);
+            tls::loadClientTrust(context);
 #endif
         }
         ssl_ = context ? SSL_new(context) : nullptr;

@@ -89,15 +89,14 @@ public:
     /// 取 Gateway 地址并连接。
     void openGateway() {
         auto self = shared_from_this();
-        auto c = api::httpsClient(api::kHost);
-        if (!c) { fail("无法解析 api.bot.qq.com"); return; }
         auto r = drogon::HttpRequest::newHttpRequest();
         r->setPath("/gateway/bot");
         r->addHeader("Host", api::kHost);
         r->addHeader("Authorization", "QQBot " + accessToken());
-        c->sendRequest(r, [self](drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) {
+        api::httpsSend(api::kHost, r, [self](drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) {
             try {
-                if (rr != drogon::ReqResult::Ok || !resp) throw std::runtime_error("获取 Gateway 地址失败（网络请求未完成）");
+                if (rr != drogon::ReqResult::Ok || !resp)
+                    throw std::runtime_error("获取 Gateway 地址失败（" + api::httpsFailure(rr) + "）");
                 const auto body = resp->body();
                 auto j = json::parse(body);
                 if (resp->statusCode() >= 300 || !j.contains("url") || !j["url"].is_string()) {
@@ -115,8 +114,6 @@ private:
 
     void fetchAccessToken() {
         auto self = shared_from_this();
-        auto c = api::httpsClient(api::kHost);
-        if (!c) { fail("无法解析 api.bot.qq.com"); return; }
         std::string appId, secret;
         { std::lock_guard lock(mu_); appId = options_.appId; secret = options_.appSecret; }
         auto r = drogon::HttpRequest::newHttpRequest();
@@ -125,7 +122,7 @@ private:
         r->setContentTypeCode(drogon::CT_APPLICATION_JSON);
         r->addHeader("Host", api::kHost);
         r->setBody(json{{"appId", appId}, {"clientSecret", secret}}.dump());
-        c->sendRequest(r, [self, c](drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) {
+        api::httpsSend(api::kHost, r, [self](drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) {
             try {
                 if (self->stopping_) return;
                 if (rr != drogon::ReqResult::Ok || !resp || resp->statusCode() >= 300) throw std::runtime_error("获取 AccessToken 失败");
@@ -138,7 +135,7 @@ private:
                     else if (v.is_string()) try { expiresIn = std::stoi(v.get<std::string>()); } catch (...) {}
                 }
                 self->scheduleTokenRefresh(expiresIn);
-                if (self->hooks_.token) self->hooks_.token(c);
+                if (self->hooks_.token) self->hooks_.token({});
             } catch (const std::exception& e) { self->fail(e.what()); }
         });
     }
