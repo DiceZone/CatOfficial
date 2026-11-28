@@ -1,0 +1,2 @@
+-keep class zone.dice.catofficial.Native { *; }
+-keepclasseswithmembernames class * { native <methods>; }

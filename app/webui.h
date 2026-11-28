@@ -5,6 +5,7 @@
 // 机器人、连接与设置的修改写入配置文件，重启后生效（面板会提示）。
 
 #include "config.h"
+#include "platform/runtime.h"
 #include "hub.h"
 #include "logbuf.h"
 #include "panel.h"
@@ -53,6 +54,12 @@ public:
     /// 首次启动时生成面板密码并写回配置文件。返回是否新生成了密码；@p saved 表示是否写进了文件。
     static bool ensurePassword(const std::filesystem::path& configPath, Config& config, bool& saved) {
         saved = true;
+#ifdef __ANDROID__
+        // 内嵌本机 UI 不生成面板密码。其他平台出包仍走下面的首次生成逻辑。
+        (void)configPath;
+        config.webuiMustChangePassword = false;
+        return false;
+#endif
         if (!config.webuiEnabled || !config.webuiPassword.empty()) return false;
         json raw;
         {   // 读完就关闭：Windows 上文件还开着时无法用改名的方式覆盖它，密码会写不进去。
@@ -130,7 +137,9 @@ public:
         route("/api/webui/session", drogon::Get, false, [](const drogon::HttpRequestPtr& req, const json&, Callback&& cb) {
             const bool ok = authenticated(req);
             const auto& tools = toolsSlot();
-            cb(jsonResponse(200, json{{"authenticated", ok}, {"must_change_password", ok && state().hub->config().webuiMustChangePassword},
+            cb(jsonResponse(200, json{{"authenticated", ok}, {"must_change_password", ok && forcePasswordChange(req)},
+                                      {"passwordless", localAppSession(req)},
+                                      {"os", runtimeOs()},
                                       {"features", json{{"files", tools.files != nullptr}, {"terminal", tools.sessions != nullptr}, {"programs", tools.programs != nullptr}}}}));
         });
         // 在线更新（与 Dice!Next 的 /api/system/update 相同的状态与动作）。
@@ -359,7 +368,7 @@ private:
     static bool guardRaw(const drogon::HttpRequestPtr& req, Callback& cb) {
         if (!onPanel(req)) { cb(notFound()); return false; }
         if (!authenticated(req)) { cb(jsonResponse(401, json{{"error", "请先登录"}})); return false; }
-        if (state().hub->config().webuiMustChangePassword) { cb(jsonResponse(403, json{{"error", "请先修改面板密码"}, {"must_change_password", true}})); return false; }
+        if (forcePasswordChange(req)) { cb(jsonResponse(403, json{{"error", "请先修改面板密码"}, {"must_change_password", true}})); return false; }
         return true;
     }
 
@@ -510,6 +519,7 @@ private:
             if (!programs) { cb(jsonResponse(503, json{{"error", "程序托管已在启动参数中关闭（--disable-programs）"}})); return; }
             cb(jsonResponse(200, json{{"programs", programs->list()}, {"exposed", panelExposed()}, {"max_programs", programs->maxPrograms()},
                                       {"full_access", programs->fullAccess()}, {"files_enabled", toolsSlot().files != nullptr},
+                                      {"os", runtimeOs()},
                                       {"settings", programs->logSettings().toJson()}}));
         });
         route("/api/webui/programs", drogon::Post, true, [](const drogon::HttpRequestPtr&, const json& body, Callback&& cb) {
@@ -698,7 +708,28 @@ private:
         writeJson(state().sessionFile, j);
     }
 
+    static bool loopbackPeer(const drogon::HttpRequestPtr& req) {
+        const auto ip = req->getPeerAddr().toIp();
+        return ip == "127.0.0.1" || ip == "::1" || ip == ":ffff:127.0.0.1" || ip.rfind("127.", 0) == 0;
+    }
+
+    /// 内嵌本机 UI（当前是 Android 应用 WebView）从 loopback 进面板时免登录。
+    /// Windows / Linux / macOS 出包不走这里，对外监听时也仍要密码。
+    static bool localAppSession(const drogon::HttpRequestPtr& req) {
+#ifdef __ANDROID__
+        return loopbackPeer(req);
+#else
+        (void)req;
+        return false;
+#endif
+    }
+
+    static bool forcePasswordChange(const drogon::HttpRequestPtr& req) {
+        return !localAppSession(req) && state().hub->config().webuiMustChangePassword;
+    }
+
     static bool authenticated(const drogon::HttpRequestPtr& req) {
+        if (localAppSession(req)) return true;
         const auto token = req->getCookie(kCookie);
         if (token.empty()) return false;
         std::lock_guard lock(state().mu);
@@ -711,7 +742,7 @@ private:
     static void serve(const Handler& handler, bool needAuth, const drogon::HttpRequestPtr& req, Callback&& cb) {
         if (!onPanel(req)) { cb(notFound()); return; }
         if (needAuth && !authenticated(req)) { cb(jsonResponse(401, json{{"error", "请先登录"}})); return; }
-        if (needAuth && state().hub->config().webuiMustChangePassword && req->path() != "/api/webui/password") {
+        if (needAuth && forcePasswordChange(req) && req->path() != "/api/webui/password") {
             cb(jsonResponse(403, json{{"error", "请先修改面板密码"}, {"must_change_password", true}}));
             return;
         }

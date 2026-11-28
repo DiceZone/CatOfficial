@@ -91,7 +91,7 @@ public:
     /// 调用任意开放平台接口，结果见 api::checkedResponse。
     void call(drogon::HttpMethod method, const std::string& path, const json& body, api::Callback cb, double timeout = 0.0) {
         if (accessToken().empty()) { cb(api::result(false, 0, "尚未取得 AccessToken")); return; }
-        api::call(api::httpsClient(api::kHost), method, path, body, accessToken(), std::move(cb), timeout, logger(""));
+        api::call(method, path, body, accessToken(), std::move(cb), timeout, logger(""));
     }
 
     webhook::Reply acceptWebhook(const std::string& timestamp, const std::string& signature, const std::string& raw) {

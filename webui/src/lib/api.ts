@@ -5,11 +5,35 @@ export class ApiError extends Error {
 }
 
 /// features：启动参数关掉的功能（--disable-files 等）为 false，菜单里不显示。
-export interface Session { authenticated: boolean; must_change_password?: boolean; features?: { files: boolean; terminal: boolean; programs: boolean } }
+export interface Session { authenticated: boolean; must_change_password?: boolean; passwordless?: boolean; os?: string; features?: { files: boolean; terminal: boolean; programs: boolean } }
 
 /// 未登录（401）或必须先修改自动生成的密码（403）时回调，由外层切换到对应页面。
 let onUnauthorized: ((session: Session) => void) | null = null;
 export function setUnauthorizedHandler(handler: (session: Session) => void) { onUnauthorized = handler; }
+
+/// 打开绑定页：有本机桥（应用内 WebView）时交给系统/QQ，否则新窗口。
+export function openExternalUrl(url: string) {
+  const bridge = (window as Window & { CatOfficial?: { openUrl?: (u: string) => void } }).CatOfficial;
+  if (bridge?.openUrl) {
+    bridge.openUrl(url);
+    return;
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+/// 当前页面自己没法扫码时用跳转登录（手机浏览器、本机应用），桌面仍显示二维码。
+export function prefersJumpLogin(): boolean {
+  if (typeof window === 'undefined') return false;
+  const w = window as Window & { CatOfficial?: { openUrl?: (u: string) => void } };
+  if (w.CatOfficial?.openUrl) return true;
+  if (/Android|iPhone|iPod|Mobile/i.test(navigator.userAgent || '')) return true;
+  try {
+    if (window.matchMedia('(pointer: coarse) and (max-width: 56rem)').matches) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
 
 export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`./api/webui/${path}`, {

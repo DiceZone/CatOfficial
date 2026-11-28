@@ -57,7 +57,7 @@ interface Program {
 }
 
 interface LogSettings { log_retention_days: number; log_max_mb: number }
-interface ProgramList { programs: Program[]; exposed: boolean; max_programs: number; full_access: boolean; files_enabled: boolean; settings: LogSettings }
+interface ProgramList { programs: Program[]; exposed: boolean; max_programs: number; full_access: boolean; files_enabled: boolean; os?: string; settings: LogSettings }
 
 type Draft = Omit<Program, 'state' | 'pid' | 'started_at' | 'exit_code' | 'error' | 'resolved_cwd' | 'env' | 'files_path' | 'folder_exists'> & { envText: string };
 
@@ -150,6 +150,11 @@ export function ProgramsPage() {
           <Button size="sm" onClick={() => edit()}><Plus className="mr-2 h-4 w-4" />{t('programs.add')}</Button>
         </>} />
       {list.data?.exposed && <ExposedWarning />}
+      {list.data?.os === 'android' && (
+        <Card className="mb-4 border-sky-500/40 bg-sky-500/5">
+          <CardContent className="pt-4 text-sm text-muted-foreground">{t('programs.android_hint')}</CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(16rem,20rem)_1fr]">
         <div className="space-y-2">
@@ -235,7 +240,7 @@ export function ProgramsPage() {
                 </div>
               </Field>
               <div className="sm:col-span-2">
-                <Field label={t('programs.command')} id="program-command" hint={t('programs.command_hint')}>
+                <Field label={t('programs.command')} id="program-command" hint={t(list.data?.os === 'android' ? 'programs.command_hint_android' : 'programs.command_hint')}>
                   <Input id="program-command" className="font-mono" value={editing.command} placeholder={t('programs.command_placeholder')}
                     onChange={(e) => setEditing({ ...editing, command: e.target.value })} />
                 </Field>

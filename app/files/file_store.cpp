@@ -19,7 +19,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#else
+#elif !defined(__ANDROID__)
 #include <iconv.h>
 #endif
 
@@ -145,6 +145,9 @@ std::string gbkToUtf8(const std::string& text) {
     std::string out(static_cast<std::size_t>(bytes), '\0');
     WideCharToMultiByte(CP_UTF8, 0, w.data(), wide, out.data(), bytes, nullptr, nullptr);
     return out;
+#elif defined(__ANDROID__)
+    (void)text;
+    return text;
 #else
     iconv_t cd = iconv_open("UTF-8", "GBK");
     if (cd == reinterpret_cast<iconv_t>(-1)) return text;

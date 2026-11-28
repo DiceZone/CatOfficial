@@ -208,9 +208,71 @@ jobs:
             main/build/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: ignore
 
+  android:
+    name: Android (arm64)
+    needs: [prepare, webui]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      VCPKG_KEEP_ENV_VARS: ANDROID_NDK_HOME;ANDROID_SDK_ROOT;ANDROID_HOME;JAVA_HOME
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: main/webui/dist
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+          link-to-sdk: true
+      - name: Export Android SDK/NDK
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" >> "$GITHUB_ENV"
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build git curl zip unzip tar pkg-config
+      - name: Prepare dependencies
+        uses: ./main/.github/actions/setup-vcpkg
+        with:
+          triplet: arm64-android
+          baseline: ${{ env.VCPKG_BASELINE }}
+      - name: Build APK
+        working-directory: main
+        env:
+          CATOFFICIAL_BUILD: ${{ needs.prepare.outputs.build }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-android.sh android/gradlew
+          # WebUI is already built; keep dist so npm run build is a no-op if present.
+          ./scripts/build-android.sh
+          test -f release/CatOfficial-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatOfficial-android-arm64
+          path: main/release/CatOfficial-android.apk
+          if-no-files-found: error
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-android-arm64
+          path: |
+            vcpkg/buildtrees/**/*.log
+            main/build-android/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+
   release:
     name: Publish GitHub Release
-    needs: [prepare, windows, unix]
+    needs: [prepare, windows, unix, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -231,6 +293,7 @@ jobs:
           for target in windows-amd64.zip windows-arm64.zip linux-amd64.tar.gz linux-arm64.tar.gz macos-arm64.tar.gz; do
             compgen -G "CatOfficial-*-${target}" > /dev/null || { echo "Missing release asset: ${target}" >&2; exit 1; }
           done
+          compgen -G "CatOfficial-android.apk" > /dev/null || { echo "Missing release asset: android APK" >&2; exit 1; }
           sha256sum CatOfficial-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Generate release notes

@@ -14,7 +14,7 @@ runs:
       id: identity
       shell: bash
       env:
-        CACHE_FAMILY: vcpkg-bin-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.triplet }}-${{ inputs.baseline }}-${{ hashFiles('main/vcpkg.json', 'main/.github/actions/setup-vcpkg/action.yml') }}
+        CACHE_FAMILY: vcpkg-bin-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.triplet }}-${{ inputs.baseline }}-${{ hashFiles('main/vcpkg.json', 'main/vcpkg-configuration.json', 'main/vcpkg-overlays/**', 'main/.github/actions/setup-vcpkg/action.yml') }}
       run: |
         set -euo pipefail
         image="${ImageOS:-$RUNNER_OS}-${ImageVersion:-unknown}"
@@ -56,8 +56,12 @@ runs:
         set -euo pipefail
         if [ "$RUNNER_OS" = Linux ] && [ "$(uname -m)" = aarch64 ]; then export VCPKG_FORCE_SYSTEM_BINARIES=1; fi
         "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+        extra=()
+        if [ -d "${{ github.workspace }}/main/vcpkg-overlays/triplets" ]; then
+          extra+=(--overlay-triplets="${{ github.workspace }}/main/vcpkg-overlays/triplets")
+        fi
         for attempt in 1 2 3; do
-          if "$VCPKG_ROOT/vcpkg" install --x-manifest-root="${{ github.workspace }}/main" --x-install-root="$VCPKG_ROOT/installed" --triplet=${{ inputs.triplet }}; then
+          if "$VCPKG_ROOT/vcpkg" install --x-manifest-root="${{ github.workspace }}/main" --x-install-root="$VCPKG_ROOT/installed" --triplet=${{ inputs.triplet }} "${extra[@]}"; then
             exit 0
           fi
           if [ "$attempt" -lt 3 ]; then sleep 15; fi

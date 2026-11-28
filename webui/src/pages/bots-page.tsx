@@ -1,7 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot as BotIcon, ChevronDown, MoreHorizontal, Pencil, Plus, QrCode, RefreshCw, Trash2 } from 'lucide-react';
+import { Bot as BotIcon, ChevronDown, ExternalLink, MoreHorizontal, Pencil, Plus, QrCode, RefreshCw, Trash2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { toast } from 'sonner';
 import { Card, CardContent } from '@/components/ui/card';
@@ -13,7 +13,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { PlatformIcon, PlatformLabel } from '@/components/platform-icon';
 import { PageHeader } from '@/components/page-header';
 import { CardGrid, Choice, EmptyState, Field, StatusDot, Toggle, digits, errorText } from '@/components/form';
-import { api, botLabel, type Bot } from '@/lib/api';
+import { api, botLabel, openExternalUrl, prefersJumpLogin, type Bot } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 type Tone = 'ok' | 'warn' | 'off';
@@ -28,8 +28,8 @@ function botState(bot: Bot): { tone: Tone; key: string; detail?: string } {
 
 const reverseUrl = (b: Partial<Bot>) => `ws://${!b.host || b.host === '0.0.0.0' ? window.location.hostname : b.host}:${b.port ?? ''}/`;
 
-function BotCard({ bot, onEdit, onDelete, onToggle, onQr }: {
-  bot: Bot; onEdit: () => void; onDelete: () => void; onToggle: (v: boolean) => void; onQr: () => void;
+function BotCard({ bot, onEdit, onDelete, onToggle, onQr, jumpLogin }: {
+  bot: Bot; onEdit: () => void; onDelete: () => void; onToggle: (v: boolean) => void; onQr: () => void; jumpLogin?: boolean;
 }) {
   const { t } = useTranslation();
   const state = botState(bot);
@@ -59,7 +59,7 @@ function BotCard({ bot, onEdit, onDelete, onToggle, onQr }: {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={onEdit}><Pencil className="mr-2 h-4 w-4" />{t('common.edit')}</DropdownMenuItem>
-              {official && <DropdownMenuItem onClick={onQr}><QrCode className="mr-2 h-4 w-4" />{t('bots.rescan')}</DropdownMenuItem>}
+              {official && <DropdownMenuItem onClick={onQr}>{jumpLogin ? <ExternalLink className="mr-2 h-4 w-4" /> : <QrCode className="mr-2 h-4 w-4" />}{t('bots.rescan')}</DropdownMenuItem>}
               <DropdownMenuSeparator />
               <DropdownMenuItem className="text-destructive" onClick={onDelete}><Trash2 className="mr-2 h-4 w-4" />{t('common.delete')}</DropdownMenuItem>
             </DropdownMenuContent>
@@ -153,12 +153,13 @@ function OneBotForm({ draft, set }: { draft: Partial<Bot>; set: (p: Partial<Bot>
   );
 }
 
-/// 扫码面板：扫码完成后服务端直接保存凭据，浏览器拿不到 AppSecret。
-function QrPanel({ options, botId, onDone }: { options: Partial<Bot>; botId?: string; onDone: () => void }) {
+/// 登录面板：完成后服务端直接保存凭据。手机上跳转 QQ 是主路径，二维码收在备选里。
+function QrPanel({ options, botId, onDone, jumpLogin }: { options: Partial<Bot>; botId?: string; onDone: () => void; jumpLogin?: boolean }) {
   const { t } = useTranslation();
   const [session, setSession] = React.useState<{ id: string; url: string } | null>(null);
   const [state, setState] = React.useState<'loading' | 'waiting' | 'expired' | 'error'>('loading');
   const [error, setError] = React.useState('');
+  const [showQr, setShowQr] = React.useState(!jumpLogin);
   const optionsRef = React.useRef(options);
   optionsRef.current = options;
 
@@ -171,28 +172,62 @@ function QrPanel({ options, botId, onDone }: { options: Partial<Bot>; botId?: st
     } catch (e) { setError(errorText(e)); setState('error'); }
   }, []);
   React.useEffect(() => { void start(); }, [start]);
+
+  const pollOnce = React.useCallback(async () => {
+    if (!session || state !== 'waiting') return;
+    const o = optionsRef.current;
+    const r = await api.qrPoll(session.id, { name: o.name, mode: o.mode, subscribe_group_member_events: o.subscribe_group_member_events,
+      auto_ack_interactions: o.auto_ack_interactions, enabled: o.enabled ?? true }, botId);
+    if (r.status === 'expired') setState('expired');
+    if (r.status === 'completed') { toast.success(t('bots.qr_done')); onDone(); }
+  }, [session, state, botId, onDone, t]);
+
   React.useEffect(() => {
     if (!session || state !== 'waiting') return;
     let cancelled = false;
-    const timer = window.setInterval(async () => {
-      try {
-        const o = optionsRef.current;
-        const r = await api.qrPoll(session.id, { name: o.name, mode: o.mode, subscribe_group_member_events: o.subscribe_group_member_events,
-          auto_ack_interactions: o.auto_ack_interactions, enabled: o.enabled ?? true }, botId);
-        if (cancelled) return;
-        if (r.status === 'expired') setState('expired');
-        if (r.status === 'completed') { toast.success(t('bots.qr_done')); onDone(); }
-      } catch (e) { if (!cancelled) { setError(errorText(e)); setState('error'); } }
-    }, 2000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [session, state, botId, onDone, t]);
+    const timer = window.setInterval(() => { void pollOnce().catch((e) => { if (!cancelled) { setError(errorText(e)); setState('error'); } }); }, 2000);
+    const onVis = () => { if (document.visibilityState === 'visible') void pollOnce().catch(() => {}); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
+  }, [session, state, pollOnce]);
+
+  const openLogin = () => { if (session?.url) openExternalUrl(session.url); };
+  const qrBox = (
+    <div className="flex h-56 w-56 items-center justify-center rounded-lg border bg-white p-3">
+      {session && state !== 'loading' ? <QRCodeSVG value={session.url} size={200} className={cn(state !== 'waiting' && 'opacity-20')} />
+        : <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />}
+    </div>
+  );
+
+  if (jumpLogin) {
+    return (
+      <div className="flex flex-col items-center gap-4">
+        {state === 'loading' && !showQr ? <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" /> : null}
+        <p className="text-center text-sm text-muted-foreground">
+          {state === 'waiting' && t('bots.qr_waiting_app')}
+          {state === 'loading' && t('bots.qr_hint_app')}
+          {state === 'expired' && t('bots.qr_expired')}
+          {state === 'error' && t('common.failed', { error })}
+        </p>
+        {state === 'waiting' && (
+          <Button onClick={openLogin}><ExternalLink className="mr-2 h-4 w-4" />{t('bots.qr_open_qq')}</Button>
+        )}
+        {(state === 'expired' || state === 'error') && <Button size="sm" variant="outline" onClick={start}><RefreshCw className="mr-2 h-4 w-4" />{t('bots.qr_refresh')}</Button>}
+        {showQr ? (
+          <div className="flex flex-col items-center gap-3">
+            {qrBox}
+            {state === 'waiting' && <p className="text-center text-xs text-muted-foreground">{t('bots.qr_hint')}</p>}
+          </div>
+        ) : (
+          <button type="button" className="text-xs text-primary hover:underline" onClick={() => setShowQr(true)}>{t('bots.qr_show_code')}</button>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <div className="flex h-56 w-56 items-center justify-center rounded-lg border bg-white p-3">
-        {session && state !== 'loading' ? <QRCodeSVG value={session.url} size={200} className={cn(state !== 'waiting' && 'opacity-20')} />
-          : <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />}
-      </div>
+      {qrBox}
       <p className="text-center text-sm text-muted-foreground">
         {state === 'waiting' && t('bots.qr_hint')}
         {state === 'expired' && t('bots.qr_expired')}
@@ -208,6 +243,7 @@ type Adding = { kind: 'official'; step: 'qr' | 'manual'; draft: Partial<Bot> } |
 export function BotsPage() {
   const { t } = useTranslation();
   const client = useQueryClient();
+  const jumpLogin = prefersJumpLogin();
   const bots = useQuery({ queryKey: ['bots'], queryFn: api.bots, refetchInterval: 5000 });
   const [adding, setAdding] = React.useState<Adding | null>(null);
   const [editing, setEditing] = React.useState<Partial<Bot> | null>(null);
@@ -254,7 +290,7 @@ export function BotsPage() {
       {bots.isLoading ? null : list.length === 0
         ? <EmptyState icon={BotIcon} title={t('bots.empty')} hint={t('bots.empty_hint')} action={addMenu} />
         : <CardGrid>{list.map((b) => (
-            <BotCard key={b.id} bot={b} onEdit={() => setEditing(editable(b))} onDelete={() => setRemoving(b)}
+            <BotCard key={b.id} bot={b} jumpLogin={jumpLogin} onEdit={() => setEditing(editable(b))} onDelete={() => setRemoving(b)}
               onToggle={(v) => save.mutate({ ...editable(b), enabled: v })} onQr={() => setRescan(editable(b))} />
           ))}</CardGrid>}
 
@@ -264,7 +300,7 @@ export function BotsPage() {
           <DialogHeader><DialogTitle>{t('bots.add_title')} · {t(adding?.kind === 'onebot' ? 'bots.type_onebot' : 'bots.type_official')}</DialogTitle></DialogHeader>
           {adding?.kind === 'official' && adding.step === 'qr' && (
             <DialogBody className="space-y-5">
-              <QrPanel options={adding.draft} onDone={qrDone} />
+              <QrPanel options={adding.draft} onDone={qrDone} jumpLogin={jumpLogin} />
               <p className="text-center"><button type="button" className="text-xs text-primary hover:underline"
                 onClick={() => setAdding({ ...adding, step: 'manual' })}>{t('bots.manual_login')}</button></p>
               <div className="border-t pt-5"><OfficialOptions draft={adding.draft} set={setAddDraft} /></div>
@@ -301,7 +337,7 @@ export function BotsPage() {
       <Dialog open={rescan !== null} onOpenChange={(v) => { if (!v) setRescan(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader><DialogTitle>{t('bots.qr_title')}</DialogTitle><DialogDescription>{rescan && botLabel(rescan as Bot)}</DialogDescription></DialogHeader>
-          {rescan && <DialogBody><QrPanel options={rescan} botId={rescan.id} onDone={qrDone} /></DialogBody>}
+          {rescan && <DialogBody><QrPanel options={rescan} botId={rescan.id} onDone={qrDone} jumpLogin={jumpLogin} /></DialogBody>}
         </DialogContent>
       </Dialog>
 

@@ -7,6 +7,9 @@
 
 #ifdef _WIN32
 #include <share.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -305,6 +308,46 @@ std::string resolveProgramCommand(const std::string& command, const fs::path& cw
     }
     return command;   // 不在工作目录里：按原样交给系统去 PATH 里找（java、python 之类）
 }
+
+#ifndef _WIN32
+void chmodExecutable(const fs::path& path) {
+    std::error_code ec;
+    if (fs::is_regular_file(path, ec)) ::chmod(utf8(path).c_str(), 0755);
+}
+
+/// 导入压缩包后给 ELF 与脚本加上执行权限（zip 常常丢掉 +x；Android 上没有它就启动不了）。
+void markExecutables(const fs::path& dir) {
+    std::error_code ec;
+    for (const auto& item : fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec)) {
+        if (!item.is_regular_file(ec)) continue;
+        std::ifstream in(item.path(), std::ios::binary);
+        char mag[4]{};
+        in.read(mag, 4);
+        const auto n = in.gcount();
+        const bool elf = n >= 4 && mag[0] == 0x7f && mag[1] == 'E' && mag[2] == 'L' && mag[3] == 'F';
+        const bool script = n >= 2 && mag[0] == '#' && mag[1] == '!';
+        if (elf || script) chmodExecutable(item.path());
+    }
+}
+
+void ensureCommandExecutable(const std::string& command, const fs::path& cwd) {
+    const auto start = command.find_first_not_of(" \t");
+    if (start == std::string::npos) return;
+    std::string first;
+    if (command[start] == '\'' || command[start] == '"') {
+        const auto end = command.find(command[start], start + 1);
+        if (end == std::string::npos) return;
+        first = command.substr(start + 1, end - start - 1);
+    } else {
+        const auto end = command.find_first_of(" \t", start);
+        first = command.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    }
+    if (first.empty() || (first.find('/') == std::string::npos && first[0] != '.')) return;
+    auto file = fromUtf8(first);
+    if (!file.is_absolute()) file = cwd / file;
+    chmodExecutable(file);
+}
+#endif
 
 json ProgramConfig::toJson() const {
     json envJson = json::object();
@@ -809,6 +852,9 @@ bool ProgramManager::importArchive(const std::string& id, const fs::path& archiv
         op.actor = "面板";
         store_->record(op);
     }
+#ifndef _WIN32
+    markExecutables(dir);
+#endif
     runtime->output->append("\r\n\x1b[36m[CatOfficial] 已导入压缩包 " + fileName + "，原来的实例目录已移入回收站\x1b[0m\r\n");
     if (log_) log_(LogLevel::info, "托管程序「" + runtime->config.name + "」已导入压缩包 " + fileName);
     return true;
@@ -863,7 +909,8 @@ bool ProgramManager::launch(const std::shared_ptr<Runtime>& r, std::string& erro
 #ifdef _WIN32
     options.commandLine = widen(resolveProgramCommand(config.command, workingDirectory(config)));
 #else
-    options.argv = {"/bin/sh", "-c", resolveProgramCommand(config.command, workingDirectory(config))};
+    ensureCommandExecutable(config.command, workingDirectory(config));
+    options.argv = {defaultShell(), "-c", resolveProgramCommand(config.command, workingDirectory(config))};
 #endif
     options.cwd = utf8(workingDirectory(config));
     options.env = config.env;

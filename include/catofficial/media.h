@@ -158,9 +158,7 @@ inline void requestFileInfo(const ContextPtr& ctx, const json& body, const char*
                             const char* failedError, const char* failedReason,
                             const char* missingReason, const char* successLog) {
     const std::string filesPath = basePath(ctx->direct, ctx->target) + "/files";
-    auto c = api::httpsClient(api::kHost);
-    if (!c) { ctx->fail("无法解析 api.bot.qq.com", "无法解析 api.bot.qq.com"); return; }
-    c->sendRequest(apiPost(ctx, filesPath, body), [ctx, filesPath, step, failedError, failedReason, missingReason, successLog](
+    api::httpsSend(api::kHost, apiPost(ctx, filesPath, body), [ctx, filesPath, step, failedError, failedReason, missingReason, successLog](
         drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) {
         guarded(ctx, step, [&] {
             if (rr != drogon::ReqResult::Ok || !resp || resp->statusCode() >= 300) {
@@ -206,8 +204,6 @@ inline void uploadPart(const ContextPtr& ctx, const ChunkedPtr& job, std::size_t
         const Part& p = job->parts[idx];
         ParsedUrl pu;
         if (!parseUrl(p.presignedUrl, pu)) { ctx->say(LogLevel::warn, "分片预签名地址无效，上传中止"); ctx->fail("分片预签名地址无效"); return; }
-        auto c = clientFor(pu.host, pu.port, pu.scheme == "https");
-        if (!c) { const auto error = "无法解析分片上传域名 " + pu.host; ctx->fail(error, error); return; }
         auto r = drogon::HttpRequest::newHttpRequest();
         r->setMethod(drogon::Put);
         r->setPathEncode(false);
@@ -215,7 +211,7 @@ inline void uploadPart(const ContextPtr& ctx, const ChunkedPtr& job, std::size_t
         r->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
         r->addHeader("Host", pu.host);
         r->setBody(job->data->substr(p.offset, p.size));
-        c->sendRequest(r, [ctx, job, idx](drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) {
+        auto afterPut = [ctx, job, idx](drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) {
             guarded(ctx, "PUT 分片回调", [&] {
                 const Part& p = job->parts[idx];
                 if (rr != drogon::ReqResult::Ok || !resp || resp->statusCode() >= 300) {
@@ -227,11 +223,9 @@ inline void uploadPart(const ContextPtr& ctx, const ChunkedPtr& job, std::size_t
                 const std::string partMd5 = hexDigest(job->data->substr(p.offset, p.size), EVP_md5());
                 if (partMd5.empty()) { ctx->say(LogLevel::warn, "分片摘要计算失败，上传中止"); ctx->fail("分片摘要计算失败"); return; }
                 const std::string finishPath = basePath(ctx->direct, ctx->target) + "/upload_part_finish";
-                auto c2 = api::httpsClient(api::kHost);
-                if (!c2) { ctx->fail("无法解析 api.bot.qq.com", "无法解析 api.bot.qq.com"); return; }
                 const auto body = json{{"upload_id", job->uploadId}, {"part_index", p.index},
                                        {"block_size", std::to_string(p.size)}, {"md5", partMd5}};
-                c2->sendRequest(apiPost(ctx, finishPath, body), [ctx, job, idx, finishPath](drogon::ReqResult rr2, const drogon::HttpResponsePtr& resp2) {
+                api::httpsSend(api::kHost, apiPost(ctx, finishPath, body), [ctx, job, idx, finishPath](drogon::ReqResult rr2, const drogon::HttpResponsePtr& resp2) {
                     guarded(ctx, "upload_part_finish 回调", [&] {
                         if (rr2 != drogon::ReqResult::Ok || !resp2 || resp2->statusCode() >= 300) {
                             ctx->say(LogLevel::warn, "POST " + finishPath + " failed: " + httpFailure(resp2));
@@ -243,7 +237,14 @@ inline void uploadPart(const ContextPtr& ctx, const ChunkedPtr& job, std::size_t
                     });
                 });
             });
-        });
+        };
+        if (pu.scheme == "https") {
+            api::httpsSend(pu.host, r, afterPut, 60.0, pu.port);
+        } else {
+            auto c = clientFor(pu.host, pu.port, false);
+            if (!c) { const auto error = "无法解析分片上传域名 " + pu.host; ctx->fail(error, error); return; }
+            c->sendRequest(r, [c, afterPut](drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) { afterPut(rr, resp); });
+        }
     });
 }
 
@@ -273,13 +274,11 @@ inline void uploadBytes(TokenSource token, bool direct, const std::string& targe
             return;
         }
         const std::string prepPath = basePath(direct, target) + "/upload_prepare";
-        auto c = api::httpsClient(api::kHost);
-        if (!c) { ctx->fail("无法解析 api.bot.qq.com", "无法解析 api.bot.qq.com"); return; }
         // file_size / block_size 在官方规格里是字符串，不是数字。
         const auto body = json{{"file_type", fileType}, {"file_size", std::to_string(bytes->size())}, {"file_name", fileName},
                                {"md5", md5}, {"sha1", sha1}, {"md5_10m", md5Prefix}};
         ctx->say(LogLevel::info, "发起 upload_prepare " + prepPath + " file_type=" + std::to_string(fileType) + " file_name=" + fileName);
-        c->sendRequest(detail::apiPost(ctx, prepPath, body), [ctx, bytes, fileName, fileType, prepPath](
+        api::httpsSend(api::kHost, detail::apiPost(ctx, prepPath, body), [ctx, bytes, fileName, fileType, prepPath](
             drogon::ReqResult rr, const drogon::HttpResponsePtr& resp) {
             detail::guarded(ctx, "upload_prepare 回调", [&] {
                 if (rr != drogon::ReqResult::Ok || !resp || resp->statusCode() >= 300) {

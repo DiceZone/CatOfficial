@@ -255,6 +255,8 @@ CatOfficial 状态
 
 需要 CMake 3.21+、C++20，以及 [Drogon](https://github.com/drogonframework/drogon)、[IXWebSocket](https://github.com/machinezone/IXWebSocket)、[nlohmann/json](https://github.com/nlohmann/json)、OpenSSL、SQLite3、libcurl（`vcpkg.json` 已列出）。
 
+Android 应用（WebView 包现有面板，核心在前台服务里跑，程序托管走 POSIX 伪终端）见 [`android/README.md`](android/README.md)，一键准备原生库与前端：`scripts/build-android.ps1`。
+
 ```
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release

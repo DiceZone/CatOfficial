@@ -7,6 +7,7 @@
 #include "logbuf.h"
 #include "options.h"
 #include "paths.h"
+#include "run.h"
 #include "platform/instance_guard.h"
 #include "platform/startup_guard.h"
 #include "platform/tray_win.h"
@@ -36,6 +37,9 @@
 #else
 #include <unistd.h>
 #include "platform/posix_update.h"
+#endif
+#ifdef __ANDROID__
+#include <android/log.h>
 #endif
 
 namespace {
@@ -67,6 +71,18 @@ catofficial::Logger makeLogger() {
         static const char* names[] = {"DEBUG", "INFO", "WARN", "ERROR"};
         std::lock_guard lock(*mu);
         std::cout << "[" << stamp << "] [" << names[levelRank(level)] << "] " << message << std::endl;
+#ifdef __ANDROID__
+        android_LogPriority prio = ANDROID_LOG_INFO;
+        if (level == catofficial::LogLevel::warn) prio = ANDROID_LOG_WARN;
+        else if (level == catofficial::LogLevel::error) prio = ANDROID_LOG_ERROR;
+        else if (level == catofficial::LogLevel::debug) prio = ANDROID_LOG_DEBUG;
+        __android_log_print(prio, "CatOfficial", "%s", message.c_str());
+        try {
+            std::ofstream logFile("catofficial.log", std::ios::app);
+            logFile << "[" << stamp << "] [" << names[levelRank(level)] << "] " << message << '\n';
+        } catch (...) {
+        }
+#endif
     };
 }
 
@@ -115,17 +131,23 @@ int relaunch(char** argv, const std::filesystem::path& configPath, bool configGi
     return 0;
 #else
     (void)configPath; (void)configGiven; (void)flags;
+#ifdef __ANDROID__
+    // 应用进程不能 exec 自身（/proc/self/exe 是 app_process）。返回 42，由前台服务重启核心。
+    (void)argv;
+    return catofficial::app::update::posix::kRestartExitCode;
+#else
     if (managedLaunch()) return catofficial::app::update::posix::kRestartExitCode;
     setenv("CATOFFICIAL_RESTARTED", "1", 1);
     execv("/proc/self/exe", argv);
     execvp(argv[0], argv);
     return 1;
 #endif
+#endif
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int catofficial::app::run(int argc, char** argv) {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
 #endif
@@ -153,7 +175,12 @@ int main(int argc, char** argv) {
     const bool filesFullAccess = options.filesFullAccess;
     // 容器模式：与 Dice!Next 的 DICENEXT_CONTAINER 相同，在线更新只提示新版本。写进环境变量，
     // 在线更新的容器检测、重启时拉起的启动器都认得出来。
-    if (options.container) {
+#ifdef __ANDROID__
+    const bool container = true;
+#else
+    const bool container = options.container;
+#endif
+    if (container) {
 #ifdef _WIN32
         SetEnvironmentVariableW(L"CATOFFICIAL_CONTAINER", L"1");
 #else
@@ -250,12 +277,17 @@ int main(int argc, char** argv) {
     if (config.webuiEnabled) {
         const auto host = config.webuiHost == "0.0.0.0" ? std::string("127.0.0.1") : config.webuiHost;
         log(catofficial::LogLevel::info, "管理面板：http://" + host + ":" + std::to_string(config.webuiPort) + "/");
+#ifndef __ANDROID__
         if (newPassword && passwordSaved)
             log(catofficial::LogLevel::info, "已生成管理面板密码：" + config.webuiPassword + "（已写入配置文件 webui.password，可在面板中修改）");
         else if (newPassword)
             log(catofficial::LogLevel::warn, "已生成管理面板密码：" + config.webuiPassword + "，但写入配置文件失败，下次启动会重新生成。请确认程序目录可写");
+#endif
         if (config.webuiHost != "127.0.0.1" && config.webuiHost != "localhost" && config.webuiHost != "::1")
             log(catofficial::LogLevel::warn, "管理面板监听在 " + config.webuiHost + "，其他机器也能访问，请使用足够强的密码");
+#ifdef __ANDROID__
+        std::ofstream(installRoot / ".panel-url") << "http://" << host << ":" << config.webuiPort << "/\n";
+#endif
     }
 
     // 在线更新：检查、下载、校验在后台线程；安装交给启动器。
@@ -282,7 +314,7 @@ int main(int argc, char** argv) {
     if (options.disableTerminal) log(catofficial::LogLevel::info, "网页终端已关闭（--disable-terminal）");
     if (options.disablePrograms) log(catofficial::LogLevel::info, "程序托管已关闭（--disable-programs）");
     else if (options.maxPrograms != 32) log(catofficial::LogLevel::info, "程序托管最多 " + std::to_string(options.maxPrograms) + " 个（--max-programs）");
-    if (options.container) log(catofficial::LogLevel::info, "容器模式（--container）：在线更新只提示新版本，不下载、不安装");
+    if (container) log(catofficial::LogLevel::info, "容器模式（--container）：在线更新只提示新版本，不下载、不安装");
     // 回收站里过期的条目每小时清一次；闲置的终端会话每五分钟收一次
     // 回收站总要清（程序托管也往里放东西）；实例日志按设置每小时清一次
     drogon::app().getLoop()->runAfter(30.0, [fileStore] { fileStore->purgeExpiredTrash(); });
@@ -314,3 +346,9 @@ int main(int argc, char** argv) {
     }
     return 0;
 }
+
+#ifndef CATOFFICIAL_ANDROID
+int main(int argc, char** argv) {
+    return catofficial::app::run(argc, argv);
+}
+#endif

@@ -83,7 +83,7 @@ export function DashboardPage() {
         <Metric icon={Boxes} label={t('dashboard.instances')} value={programsEnabled ? instances.data ?? '—' : t('status.disabled')} />
         <Metric icon={Clock} label={t('dashboard.uptime')} value={<span className="text-lg">{duration(status.started_at)}</span>} />
       </div>
-      <div className="grid min-w-0 grid-cols-[repeat(3,minmax(17rem,1fr))] items-stretch gap-4 overflow-x-auto pb-1">
+      <div className="grid min-w-0 grid-cols-1 items-stretch gap-4 lg:grid-cols-3">
         <div className="flex min-h-[22rem] min-w-0 flex-col"><ServerInfo /></div>
         <Card>
           <CardHeader><CardTitle>{t('dashboard.bots')}</CardTitle></CardHeader>

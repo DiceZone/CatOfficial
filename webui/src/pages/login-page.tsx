@@ -11,7 +11,7 @@ import { api } from '@/lib/api';
 
 function AuthCard({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-4">
+    <div className="flex min-h-dvh items-center justify-center bg-background p-4 pt-[max(1rem,var(--app-inset-top))] pb-[max(1rem,var(--app-inset-bottom))]">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <div className="mb-2"><Brand /></div>

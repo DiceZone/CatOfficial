@@ -22,6 +22,7 @@ export function SettingsPage() {
   const { t } = useTranslation();
   const client = useQueryClient();
   const loaded = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const session = useQuery({ queryKey: ['session'], queryFn: api.session });
   const bots = useQuery({ queryKey: ['bots'], queryFn: api.bots });
   const [s, setS] = React.useState<Settings | null>(null);
   const [newPassword, setNewPassword] = React.useState('');
@@ -158,9 +159,11 @@ export function SettingsPage() {
         <CardContent className="grid gap-5 md:grid-cols-3">
           <Field label={t('settings.host')}><Input value={s.webui.host ?? '127.0.0.1'} onChange={(e) => patch('webui', { host: e.target.value.trim() })} /></Field>
           <Field label={t('settings.port')}><Input inputMode="numeric" value={s.webui.port ?? 18082} onChange={(e) => patch('webui', { port: digits(e.target.value) })} /></Field>
-          <Field label={t('settings.new_password')} hint={t('settings.new_password_hint')} id="new-password">
-            <Input id="new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
-          </Field>
+          {!session.data?.passwordless && (
+            <Field label={t('settings.new_password')} hint={t('settings.new_password_hint')} id="new-password">
+              <Input id="new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+            </Field>
+          )}
         </CardContent>
       </Card>
 

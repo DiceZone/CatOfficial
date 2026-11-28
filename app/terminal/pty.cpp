@@ -13,13 +13,14 @@
 #else
 #include <csignal>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <util.h>
-#else
+#elif !defined(__ANDROID__)
 #include <pty.h>
 #endif
 #endif
@@ -222,12 +223,9 @@ std::unique_ptr<Pty> Pty::start(const PtyOptions& options, std::string& error) {
     int errorPipe[2];
     if (::pipe(errorPipe) != 0) { error = "无法创建管道"; return nullptr; }
     ::fcntl(errorPipe[1], F_SETFD, FD_CLOEXEC);
-    int master = -1;
-    const pid_t pid = ::forkpty(&master, nullptr, nullptr, &ws);
-    if (pid < 0) { ::close(errorPipe[0]); ::close(errorPipe[1]); error = "无法创建伪终端"; return nullptr; }
-    if (pid == 0) {
+    auto runChild = [&] {
         ::close(errorPipe[0]);
-        // forkpty 已经让子进程自成一个会话：结束时杀整个进程组就能连子进程一起带走
+        // 子进程自成一个会话：结束时杀整个进程组就能连子进程一起带走
         if (!options.cwd.empty() && ::chdir(options.cwd.c_str()) != 0) {
             const int code = 1;
             (void)!::write(errorPipe[1], &code, sizeof(code));
@@ -242,7 +240,41 @@ std::unique_ptr<Pty> Pty::start(const PtyOptions& options, std::string& error) {
         const int code = 2;
         (void)!::write(errorPipe[1], &code, sizeof(code));
         ::_exit(127);
+    };
+
+    int master = -1;
+    pid_t pid = -1;
+#ifdef __ANDROID__
+    // bionic 没有 libutil/forkpty。用 posix_openpt，和 Termux 同一路。
+    master = ::posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (master >= 0 && ::grantpt(master) == 0 && ::unlockpt(master) == 0) {
+        (void)::ioctl(master, TIOCSWINSZ, &ws);
+        char slaveName[64]{};
+        if (::ptsname_r(master, slaveName, sizeof(slaveName)) == 0) {
+            pid = ::fork();
+            if (pid == 0) {
+                ::setsid();
+                const int slave = ::open(slaveName, O_RDWR);
+                if (slave < 0) ::_exit(127);
+                (void)::ioctl(slave, TIOCSCTTY, nullptr);
+                ::dup2(slave, STDIN_FILENO);
+                ::dup2(slave, STDOUT_FILENO);
+                ::dup2(slave, STDERR_FILENO);
+                if (slave > STDERR_FILENO) ::close(slave);
+                ::close(master);
+                runChild();
+            }
+        }
     }
+    if (pid < 0 && master >= 0) {
+        ::close(master);
+        master = -1;
+    }
+#else
+    pid = ::forkpty(&master, nullptr, nullptr, &ws);
+    if (pid == 0) runChild();
+#endif
+    if (pid < 0) { ::close(errorPipe[0]); ::close(errorPipe[1]); if (master >= 0) ::close(master); error = "无法创建伪终端"; return nullptr; }
     ::close(errorPipe[1]);
     int code = 0;
     const auto got = ::read(errorPipe[0], &code, sizeof(code));
@@ -312,9 +344,14 @@ int Pty::wait() {
 
 std::string defaultShell() {
     std::error_code ec;
+#ifdef __ANDROID__
+    if (std::filesystem::exists("/system/bin/sh", ec)) return "/system/bin/sh";
+    return "/system/bin/sh";
+#else
     if (const char* shell = std::getenv("SHELL"); shell && *shell && std::filesystem::exists(shell, ec)) return shell;
     if (std::filesystem::exists("/bin/bash", ec)) return "/bin/bash";
     return "/bin/sh";
+#endif
 }
 
 #endif

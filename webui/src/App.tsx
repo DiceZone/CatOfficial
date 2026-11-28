@@ -61,7 +61,7 @@ function Shell() {
 
   if (session.isLoading) return null;
   if (!session.data?.authenticated) return <LoginPage />;
-  if (session.data.must_change_password) return <ChangePasswordPage />;
+  if (session.data.must_change_password && !session.data.passwordless) return <ChangePasswordPage />;
   const Page = PAGES[path];
   return (
     <Layout currentPath={path} onNavigate={(next) => { window.location.hash = next; }}>

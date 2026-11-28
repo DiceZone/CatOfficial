@@ -401,12 +401,27 @@ SysInfo gather(const std::filesystem::path& dataPath) {
 
 
 #elif defined(__linux__)
+#if defined(__ANDROID__)
+    s.os = "Android";
+    s.osId = "android";
+    {
+        std::ifstream f("/system/build.prop");
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.rfind("ro.build.version.release=", 0) == 0) {
+                s.os = "Android " + line.substr(25);
+                break;
+            }
+        }
+    }
+#else
     auto osr = osRelease();
     s.os = osr.count("PRETTY_NAME") ? osr["PRETTY_NAME"] : "Linux";
     std::string id = osr.count("ID") ? osr["ID"] : "linux";
     if (id == "ubuntu" || id == "debian" || id == "centos" || id == "rocky") s.osId = id;
     else if (id == "rhel" || id == "fedora" || id == "almalinux") s.osId = "centos";
     else s.osId = "linux";
+#endif
     s.cpuModel = cpuinfoField("model name");
     s.cpuPhysical = linuxPhysicalCores();
     { std::string mhz = cpuinfoField("cpu MHz"); if (!mhz.empty()) s.cpuMhz = static_cast<int>(atof(mhz.c_str())); }

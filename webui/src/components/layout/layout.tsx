@@ -62,7 +62,7 @@ export function Layout({ children, currentPath, onNavigate }: LayoutProps) {
   return (
     <div className="v2-shell flex h-dvh overflow-hidden bg-background">
       <aside className="relative z-40 hidden h-full w-[232px] shrink-0 flex-col border-r bg-card lg:flex">
-        <div className="flex h-16 shrink-0 items-center px-4"><Brand /></div>
+        <div className="v2-topbar flex shrink-0 items-center px-4"><Brand /></div>
         <nav aria-label={t('header.menu')} className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">{navList(false)}</nav>
       </aside>
       <DialogPrimitive.Root open={menuOpen} onOpenChange={setMenuOpen}>
@@ -140,6 +140,7 @@ function VersionButton() {
 function Header({ currentPath, onMenu }: { currentPath: string; onMenu: () => void }) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
+  const passwordless = useQuery({ queryKey: ['session'], queryFn: api.session }).data?.passwordless;
   const [dark, setDark] = React.useState(() => document.documentElement.classList.contains('dark'));
   const current = NAV.find((item) => item.path === currentPath);
   const toggleTheme = () => {
@@ -152,7 +153,7 @@ function Header({ currentPath, onMenu }: { currentPath: string; onMenu: () => vo
     try { await api.logout(); } finally { client.setQueryData(['session'], { authenticated: false }); }
   };
   return (
-    <header className="flex h-16 shrink-0 items-center gap-2 border-b bg-card px-4 sm:px-6">
+    <header className="v2-topbar flex shrink-0 items-center gap-2 border-b bg-card px-4 sm:px-6">
       <Button variant="ghost" size="icon" className="lg:hidden" aria-label={t('header.menu')} onClick={onMenu}><Menu className="h-5 w-5" /></Button>
       <div className="lg:hidden"><Brand compact /></div>
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">{current ? t(current.labelKey) : ''}</span>
@@ -166,7 +167,9 @@ function Header({ currentPath, onMenu }: { currentPath: string; onMenu: () => vo
       <Button variant="ghost" size="icon" aria-label={t('header.theme')} title={t('header.theme')} onClick={toggleTheme}>
         {dark ? <Sun className="h-[18px] w-[18px]" /> : <Moon className="h-[18px] w-[18px]" />}
       </Button>
-      <Button variant="ghost" size="icon" aria-label={t('header.logout')} title={t('header.logout')} onClick={logout}><LogOut className="h-[18px] w-[18px]" /></Button>
+      {!passwordless && (
+        <Button variant="ghost" size="icon" aria-label={t('header.logout')} title={t('header.logout')} onClick={logout}><LogOut className="h-[18px] w-[18px]" /></Button>
+      )}
     </header>
   );
 }
