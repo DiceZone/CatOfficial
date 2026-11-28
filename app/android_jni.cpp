@@ -11,6 +11,7 @@
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -68,6 +69,20 @@ Java_zone_dice_catofficial_Native_run(JNIEnv* env, jclass, jstring filesDir) {
     setenv("CATOFFICIAL_CONTAINER", "1", 1);
     prependPath("/system/bin");
     prependPath(root + "/bin");
+    Dl_info so{};
+    if (dladdr((void*)&Java_zone_dice_catofficial_Native_run, &so) && so.dli_fname) {
+        std::string dir = so.dli_fname;
+        const auto slash = dir.find_last_of('/');
+        if (slash != std::string::npos) dir.resize(slash);
+        if (!dir.empty()) setenv("CATOFFICIAL_LIBDIR", dir.c_str(), 1);
+        const std::string wrap = dir.empty() ? std::string("libcoexecwrap.so") : dir + "/libcoexecwrap.so";
+        if (::access(wrap.c_str(), R_OK) == 0) {
+            setenv("CATOFFICIAL_EXECWRAP", wrap.c_str(), 1);
+            __android_log_print(ANDROID_LOG_INFO, kTag, "exec wrap %s", wrap.c_str());
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, kTag, "缺少 libcoexecwrap.so，托管程序可能无法执行");
+        }
+    }
     const auto cert = root + "/cacert.pem";
     if (::access(cert.c_str(), R_OK) == 0) {
         setenv("SSL_CERT_FILE", cert.c_str(), 1);

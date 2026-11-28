@@ -222,7 +222,9 @@ public:
                 const auto saved = saveItem("bots", body.value("bot_id", std::string()), bot);
                 if (saved->statusCode() != drogon::k200OK) { cb(saved); return; }
                 const auto result = json::parse(saved->body(), nullptr, false);
-                cb(jsonResponse(200, json{{"status", "completed"}, {"bot_id", result.value("id", std::string())}, {"app_id", bot["app_id"]}}));
+                const auto botId = result.value("id", std::string());
+                rememberBinder(botId, r.data.value("userOpenId", std::string()));
+                cb(jsonResponse(200, json{{"status", "completed"}, {"bot_id", botId}, {"app_id", bot["app_id"]}}));
             });
         });
 
@@ -876,6 +878,25 @@ private:
             *it = item;
         }
         return commit(config, json{{"id", item["id"]}});
+    }
+
+    /// 把扫码用户记成该官方机器人的主人，上线后私聊提醒返回面板。
+    static void rememberBinder(const std::string& botId, const std::string& openId) {
+        if (botId.empty()) return;
+        if (openId.empty()) {
+            state().hub->log(LogLevel::warn, "扫码绑定未返回用户 OpenID，无法私聊提醒返回面板");
+            return;
+        }
+        auto config = fileConfig();
+        if (!config.contains("masters") || !config["masters"].is_array()) config["masters"] = json::array();
+        bool known = false;
+        for (const auto& m : config["masters"])
+            if (m.value("bot_id", std::string()) == botId && m.value("openid", std::string()) == openId) { known = true; break; }
+        if (!known) {
+            config["masters"].push_back({{"bot_id", botId}, {"openid", openId}});
+            commit(config);
+        }
+        state().hub->greetBinder(botId, openId);
     }
 
     static drogon::HttpResponsePtr removeItem(const std::string& section, const std::string& id) {

@@ -705,8 +705,8 @@
   "programs": {
     "title": "Programs",
     "description": "Host other programs on this machine: start, stop, watch the console and type commands. Programs can start with CatOfficial and restart after exiting.",
-    "android_hint": "Running on Android. Commands run in the app’s private directory and must be ARM64 Linux binaries or sh scripts (for example ./dice-next or sh start.sh). Windows .exe files will not run. Imported archives get execute permission on ELF files and scripts. Hosted programs keep running with the foreground service, including when the screen is off.",
-    "command_hint_android": "Run by /system/bin/sh -c in the instance folder. Use ./filename for a binary in that folder, or sh start.sh for a script. Must be an ARM64 Linux executable; Windows programs cannot run.",
+    "android_hint": "Running on Android. Commands run in the app’s private directory. Use an Android NDK ARM64 executable (linked with libc++) or a fully statically linked binary, or an sh script. Windows .exe files will not run, and neither will GNU/Linux programs that need libstdc++.so.6 / glibc. The official Dice!Next Android build is a separate APK. Imported archives get execute permission on ELF files and scripts. Hosted programs keep running with the foreground service, including when the screen is off.",
+    "command_hint_android": "Run by /system/bin/sh -c in the instance folder. Use ./filename for a binary in that folder, or sh start.sh for a script. Must be an NDK-built ARM64 executable or a static binary; Windows programs and glibc Linux distro binaries cannot run.",
     "add": "Add program",
     "edit_title": "Edit program",
     "empty": "No hosted programs yet.",

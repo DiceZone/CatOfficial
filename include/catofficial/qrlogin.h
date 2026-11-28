@@ -24,7 +24,7 @@ using json = nlohmann::json;
 
 struct Result {
     bool ok = false;
-    json data;          // begin：{sessionId, url}；poll：{status: pending|expired|completed, appId?, appSecret?}
+    json data;          // begin：{sessionId, url}；poll：{status: pending|expired|completed, appId?, appSecret?, userOpenId?}
     std::string error;
 };
 using Callback = std::function<void(Result)>;
@@ -140,8 +140,15 @@ inline void poll(const std::string& sid, const std::string& source, Callback cb)
                 if (status != 2) { cb({true, {{"status", "pending"}}, {}}); return; }
                 const auto secret = detail::decrypt(d.value("bot_encrypt_secret", std::string()), session.key);
                 if (secret.empty()) throw std::runtime_error("扫码凭据解密失败");
+                std::string userOpenId;
+                for (const char* key : {"user_openid", "userOpenid", "openid"}) {
+                    if (!d.contains(key)) continue;
+                    if (d[key].is_string()) userOpenId = d[key].get<std::string>();
+                    else if (d[key].is_number_integer() || d[key].is_number_unsigned()) userOpenId = d[key].dump();
+                    if (!userOpenId.empty()) break;
+                }
                 { std::lock_guard lock(detail::mutex()); detail::sessions().erase(sid); }
-                cb({true, {{"status", "completed"}, {"appId", d.value("bot_appid", std::string())}, {"appSecret", secret}}, {}});
+                cb({true, {{"status", "completed"}, {"appId", d.value("bot_appid", std::string())}, {"appSecret", secret}, {"userOpenId", userOpenId}}, {}});
             } catch (const std::exception& e) { cb({false, {}, e.what()}); }
         });
 }

@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/page-header';
 import { StatusDot } from '@/components/form';
-import { PlatformIcon, PlatformLabel } from '@/components/platform-icon';
+import { BotAvatar, PlatformLabel } from '@/components/platform-icon';
 import { ServerInfo } from '@/components/dashboard/server-info';
 import { api, request, type Status } from '@/lib/api';
 import { currentLocale } from '@/i18n';
@@ -97,8 +97,7 @@ export function DashboardPage() {
             {status.bots.map((b) => (
               <div key={b.id} className="flex items-center gap-3">
                 <div className="relative shrink-0">
-                  {b.runtime?.avatar ? <img src={b.runtime.avatar} alt="" className="h-9 w-9 rounded-full" />
-                    : <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10"><PlatformIcon type={b.type} /></div>}
+                  <BotAvatar src={b.runtime?.avatar} uin={b.type === 'official' ? (b.runtime?.robot_uin || b.runtime?.self_id) : undefined} type={b.type === 'onebot' ? 'onebot' : 'official'} className="h-9 w-9" />
                   <span className="absolute -bottom-0.5 -right-0.5"><StatusDot tone={botTone(b)} /></span>
                 </div>
                 <div className="min-w-0 flex-1">

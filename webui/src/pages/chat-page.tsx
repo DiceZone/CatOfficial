@@ -19,6 +19,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { errorText } from '@/components/form';
+import { BotAvatar } from '@/components/platform-icon';
 import { useConfirm } from '@/components/confirm-dialog';
 import { MarkdownView } from '@/components/markdown/markdown-view';
 import { MarkdownEditorDialog, MarkdownInsertContext } from '@/components/markdown/markdown-editor-dialog';
@@ -123,7 +124,7 @@ function BotSwitcher({ bots, current, onPick }: { bots: Bot[]; current?: Bot; on
       <DropdownMenuTrigger asChild>
         <button type="button" title={t('chat.switch_bot')} aria-label={`${t('chat.switch_bot')} · ${label}`}
           className="relative rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <Avatar src={current?.runtime?.avatar} name={label} className="h-10 w-10 text-sm" />
+          <BotAvatar src={current?.runtime?.avatar} uin={current?.runtime?.robot_uin || current?.runtime?.self_id} type={current?.type === 'onebot' ? 'onebot' : 'official'} className="h-10 w-10" />
           <span className={cn('absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card', current?.runtime?.online ? 'bg-emerald-500' : 'bg-muted-foreground')} />
         </button>
       </DropdownMenuTrigger>
@@ -131,7 +132,7 @@ function BotSwitcher({ bots, current, onPick }: { bots: Bot[]; current?: Bot; on
         <DropdownMenuLabel>{t('chat.switch_bot')}</DropdownMenuLabel>
         {bots.map((b) => (
           <DropdownMenuItem key={b.id} onClick={() => onPick(b.id)} className="gap-2.5">
-            <Avatar src={b.runtime?.avatar} name={botLabel(b)} className="h-7 w-7 text-xs" />
+            <BotAvatar src={b.runtime?.avatar} uin={b.runtime?.robot_uin || b.runtime?.self_id} type={b.type === 'onebot' ? 'onebot' : 'official'} className="h-7 w-7" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm">{botLabel(b)}</p>
               <p className="text-xs text-muted-foreground">{t(b.runtime?.online ? 'chat.online' : 'chat.offline')}</p>

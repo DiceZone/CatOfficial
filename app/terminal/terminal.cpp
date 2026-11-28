@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <ctime>
 #include <fstream>
+#include <initializer_list>
+#include <utility>
 #include <random>
 #include <regex>
 #include <set>
@@ -269,6 +271,88 @@ void SessionManager::closeAll() {
 
 // ─── 程序托管 ─────────────────────────────────────────────────
 
+#ifndef _WIN32
+std::string shellQuote(const std::string& s) {
+    std::string quoted = "'";
+    for (char c : s) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return quoted + "'";
+}
+#endif
+
+#ifdef __ANDROID__
+std::pair<std::string, std::string> splitResolved(const std::string& resolved) {
+    if (resolved.empty()) return {};
+    std::string path, rest;
+    if (resolved[0] == '\'') {
+        for (std::size_t i = 1; i < resolved.size();) {
+            if (resolved[i] == '\'') {
+                if (i + 3 < resolved.size() && resolved.compare(i, 4, "'\\''") == 0) {
+                    path += '\'';
+                    i += 4;
+                    continue;
+                }
+                rest = resolved.substr(i + 1);
+                break;
+            }
+            path += resolved[i++];
+        }
+    } else {
+        const auto sp = resolved.find_first_of(" \t");
+        path = resolved.substr(0, sp);
+        rest = sp == std::string::npos ? std::string() : resolved.substr(sp);
+    }
+    return {path, rest};
+}
+
+bool fileHasAny(const fs::path& path, std::initializer_list<const char*> needles) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::size_t maxn = 0;
+    for (const char* n : needles) maxn = (std::max)(maxn, std::char_traits<char>::length(n));
+    std::string carry;
+    char buf[8192];
+    while (in) {
+        in.read(buf, sizeof(buf));
+        const auto got = static_cast<std::size_t>(in.gcount());
+        if (!got) break;
+        const std::string window = carry + std::string(buf, got);
+        for (const char* n : needles) if (window.find(n) != std::string::npos) return true;
+        carry = window.size() > maxn ? window.substr(window.size() - maxn) : window;
+    }
+    return false;
+}
+
+std::string androidGnuLinuxError(const std::string& resolved) {
+    const auto path = splitResolved(resolved).first;
+    if (path.empty() || path[0] != '/') return {};
+    if (!fileHasAny(path, {"libstdc++.so.6", "libc.so.6", "ld-linux-aarch64.so.1", "ld-linux-armhf.so.3"})) return {};
+    return "这个程序是给 GNU/Linux 编的（依赖 libstdc++.so.6 / glibc），Android 里没有这些库，不能直接跑。"
+           "请换成 Android NDK 编译的 ARM64 可执行文件（链接 libc++），或完全静态链接的版本。"
+           "官方 Dice!Next 安卓版是独立 APK，不能把 Linux 的 dice-next 丢进程序托管。";
+}
+
+/// Android 10+ 不能直接 exec 应用目录里的 ELF。sh -c 改成 exec linker64 <文件>，系统链接器去加载。
+std::string wrapAndroidCommand(const std::string& resolved) {
+    const auto [path, rest] = splitResolved(resolved);
+    if (path.empty() || path[0] != '/') return resolved;
+    if (path.rfind("/system/", 0) == 0 || path.rfind("/vendor/", 0) == 0 || path.rfind("/apex/", 0) == 0) return resolved;
+    std::ifstream in(path, std::ios::binary);
+    char hdr[20]{};
+    in.read(hdr, sizeof(hdr));
+    const auto n = in.gcount();
+    if (n >= 4 && hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F') {
+        const bool elf64 = n > 4 && static_cast<unsigned char>(hdr[4]) == 2;
+        const char* linker = elf64 ? "/system/bin/linker64" : "/system/bin/linker";
+        std::error_code ec;
+        if (!fs::exists(linker, ec)) return resolved;
+        return std::string("exec ") + linker + " " + shellQuote(path) + rest;
+    }
+    if (n >= 2 && hdr[0] == '#' && hdr[1] == '!')
+        return std::string("exec /system/bin/sh ") + shellQuote(path) + rest;
+    return resolved;
+}
+#endif
+
 std::string resolveProgramCommand(const std::string& command, const fs::path& cwd) {
     const auto start = command.find_first_not_of(" \t");
     if (start == std::string::npos) return command;
@@ -300,10 +384,7 @@ std::string resolveProgramCommand(const std::string& command, const fs::path& cw
 #ifdef _WIN32
         return "\"" + absolute + "\"" + rest;
 #else
-        // 交给 sh 执行：单引号括起来，路径里有空格、括号也不会被拆开
-        std::string quoted = "'";
-        for (char c : absolute) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
-        return quoted + "'" + rest;
+        return shellQuote(absolute) + rest;
 #endif
     }
     return command;   // 不在工作目录里：按原样交给系统去 PATH 里找（java、python 之类）
@@ -342,7 +423,7 @@ void ensureCommandExecutable(const std::string& command, const fs::path& cwd) {
         const auto end = command.find_first_of(" \t", start);
         first = command.substr(start, end == std::string::npos ? std::string::npos : end - start);
     }
-    if (first.empty() || (first.find('/') == std::string::npos && first[0] != '.')) return;
+    if (first.empty()) return;
     auto file = fromUtf8(first);
     if (!file.is_absolute()) file = cwd / file;
     chmodExecutable(file);
@@ -909,8 +990,24 @@ bool ProgramManager::launch(const std::shared_ptr<Runtime>& r, std::string& erro
 #ifdef _WIN32
     options.commandLine = widen(resolveProgramCommand(config.command, workingDirectory(config)));
 #else
-    ensureCommandExecutable(config.command, workingDirectory(config));
-    options.argv = {defaultShell(), "-c", resolveProgramCommand(config.command, workingDirectory(config))};
+    {
+        const auto workdir = workingDirectory(config);
+        const auto resolved = resolveProgramCommand(config.command, workdir);
+        ensureCommandExecutable(resolved, workdir);
+#ifdef __ANDROID__
+        if (const auto gnu = androidGnuLinuxError(resolved); !gnu.empty()) {
+            error = gnu;
+            std::lock_guard lock(r->mu);
+            r->state = "crashed";
+            r->error = gnu;
+            r->output->append("\r\n\x1b[31m[CatOfficial] " + gnu + "\x1b[0m\r\n");
+            return false;
+        }
+        options.argv = {defaultShell(), "-c", wrapAndroidCommand(resolved)};
+#else
+        options.argv = {defaultShell(), "-c", resolved};
+#endif
+    }
 #endif
     options.cwd = utf8(workingDirectory(config));
     options.env = config.env;

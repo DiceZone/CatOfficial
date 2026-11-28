@@ -107,6 +107,11 @@ if(CATOFFICIAL_BUILD_ANDROID)
     find_package(c-ares CONFIG REQUIRED)
     target_link_libraries(catofficial PRIVATE c-ares::cares)
     target_link_options(catofficial PRIVATE -Wl,-z,max-page-size=16384)
+    # 托管程序 / 网页终端里 exec 用户 ELF：见 app/android_execwrap.c
+    enable_language(C)
+    add_library(coexecwrap SHARED app/android_execwrap.c)
+    target_link_libraries(coexecwrap PRIVATE dl)
+    target_link_options(coexecwrap PRIVATE -Wl,-z,max-page-size=16384)
 endif()
 
 if(CATOFFICIAL_BUILD_TESTS)

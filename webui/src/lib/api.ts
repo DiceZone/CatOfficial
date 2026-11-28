@@ -56,8 +56,15 @@ export async function request<T>(method: string, path: string, body?: unknown): 
 }
 
 export interface OfficialRuntime {
-  configured?: boolean; online: boolean; self_id: number; nickname: string; display_name?: string; avatar?: string; listening?: boolean;
+  configured?: boolean; online: boolean; self_id: number; nickname: string; display_name?: string; avatar?: string; robot_uin?: string; listening?: boolean;
   app_id?: string; mode?: string; received?: number; sent?: number; error?: string; running?: boolean;
+}
+
+/** 普通 QQ 头像。假 self_id（13 位官民号）不会命中。 */
+export function qqPortrait(uin?: string | number, size: 40 | 100 | 140 | 640 = 100): string {
+  const n = String(uin ?? '').trim();
+  if (!/^\d{5,12}$/.test(n)) return '';
+  return `https://q.qlogo.cn/g?b=qq&nk=${n}&s=${size}`;
 }
 
 export interface Bot {

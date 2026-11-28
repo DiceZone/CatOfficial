@@ -705,8 +705,8 @@
   "programs": {
     "title": "程序托管",
     "description": "在这台机器上托管其他程序：启动、停止、看控制台、输入指令，可以随 CatOfficial 启动、退出后自动重启。",
-    "android_hint": "当前运行在 Android 上。启动命令在应用私有目录里执行，须使用 ARM64 Linux 可执行文件或 sh 脚本（例如 ./dice-next 或 sh start.sh）。不要使用 Windows 的 .exe。导入压缩包后会自动给 ELF 和脚本加上执行权限。程序随前台服务运行，锁屏后也会继续。",
-    "command_hint_android": "在实例目录里由 /system/bin/sh -c 执行。程序就在实例目录里时写成 ./文件名；脚本写成 sh start.sh。须是 ARM64 Linux 可执行文件，不能运行 Windows 程序。",
+    "android_hint": "当前运行在 Android 上。启动命令在应用私有目录里执行。请使用 Android NDK 编译的 ARM64 可执行文件（链接 libc++）或完全静态链接的版本，或 sh 脚本。不要使用 Windows 的 .exe，也不要把 GNU/Linux 的程序（依赖 libstdc++.so.6 / glibc）直接丢进来——系统里没有这些库。官方 Dice!Next 安卓版是独立 APK。导入压缩包后会自动给 ELF 和脚本加上执行权限。程序随前台服务运行，锁屏后也会继续。",
+    "command_hint_android": "在实例目录里由 /system/bin/sh -c 执行。程序就在实例目录里时写成 ./文件名；脚本写成 sh start.sh。须是 Android NDK 编出的 ARM64 程序或静态链接版本，不能运行 Windows 程序，也不能运行依赖 glibc 的 Linux 发行版程序。",
     "add": "添加程序",
     "edit_title": "编辑程序",
     "empty": "还没有托管的程序。",

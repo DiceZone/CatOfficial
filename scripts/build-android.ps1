@@ -117,6 +117,9 @@ New-Item -ItemType Directory -Force -Path $JniDir | Out-Null
 $So = Get-ChildItem $BuildDir -Recurse -Filter "libcatofficial.so" | Select-Object -First 1
 if (-not $So) { throw "libcatofficial.so not found" }
 Copy-Item $So.FullName (Join-Path $JniDir "libcatofficial.so") -Force
+$Wrap = Get-ChildItem $BuildDir -Recurse -Filter "libcoexecwrap.so" | Select-Object -First 1
+if (-not $Wrap) { throw "libcoexecwrap.so not found" }
+Copy-Item $Wrap.FullName (Join-Path $JniDir "libcoexecwrap.so") -Force
 
 $Stl = Get-ChildItem (Join-Path $Ndk "toolchains\llvm\prebuilt") -Recurse -Filter "libc++_shared.so" |
     Where-Object { $_.FullName -match "aarch64-linux-android" } |

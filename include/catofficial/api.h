@@ -240,4 +240,11 @@ inline void generateShareUrl(const drogon::HttpClientPtr& client, const std::str
 /// 分享链接里的机器人 QQ 号（robot_uin）；没有时为空。
 inline std::string robotUin(const std::string& shareUrl) { return queryValue(shareUrl, "robot_uin"); }
 
+/// 普通 QQ 头像（填真实 QQ 号）。机器人资料里的 avatar / qqapp+BotID 经常 404，这条和官民绑定后的用户/群头像同一套 CDN。
+inline std::string qqPortrait(const std::string& uin, int size = 100) {
+    if (uin.empty() || uin.find_first_not_of("0123456789") != std::string::npos) return {};
+    if (size != 40 && size != 100 && size != 140 && size != 640) size = 100;
+    return "https://q.qlogo.cn/g?b=qq&nk=" + uin + "&s=" + std::to_string(size);
+}
+
 }  // namespace catofficial::api

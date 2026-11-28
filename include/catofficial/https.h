@@ -9,6 +9,8 @@
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>
 #include <drogon/HttpTypes.h>
+#include "ssl_trust.h"
+
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -219,27 +221,7 @@ inline bool verifyWindows(SSL* ssl, const std::string& host) {
 }
 #endif
 
-inline void loadTrust(SSL_CTX* ctx) {
-#ifdef _WIN32
-    (void)ctx;
-#else
-    if (const char* file = std::getenv("SSL_CERT_FILE"); file && *file)
-        SSL_CTX_load_verify_locations(ctx, file, nullptr);
-    if (const char* dir = std::getenv("SSL_CERT_DIR"); dir && *dir)
-        SSL_CTX_load_verify_locations(ctx, nullptr, dir);
-    SSL_CTX_set_default_verify_paths(ctx);
-    // 目录不存在时失败并被下面清掉；Linux、Android、部分容器镜像各认其中一条。
-    for (const char* extra : {
-             "/etc/ssl/certs",
-             "/etc/pki/tls/certs",
-             "/apex/com.android.conscrypt/cacerts",
-             "/system/etc/security/cacerts",
-         }) {
-        SSL_CTX_load_verify_locations(ctx, nullptr, extra);
-    }
-    ERR_clear_error();
-#endif
-}
+inline void loadTrust(SSL_CTX* ctx) { tls::loadClientTrust(ctx); }
 
 inline std::string mimeOf(const drogon::HttpRequestPtr& req) {
     auto header = req->getHeader("content-type");

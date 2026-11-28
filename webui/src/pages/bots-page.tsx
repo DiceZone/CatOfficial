@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { PlatformIcon, PlatformLabel } from '@/components/platform-icon';
+import { BotAvatar, PlatformIcon, PlatformLabel } from '@/components/platform-icon';
 import { PageHeader } from '@/components/page-header';
 import { CardGrid, Choice, EmptyState, Field, StatusDot, Toggle, digits, errorText } from '@/components/form';
 import { api, botLabel, openExternalUrl, prefersJumpLogin, type Bot } from '@/lib/api';
@@ -42,10 +42,7 @@ function BotCard({ bot, onEdit, onDelete, onToggle, onQr, jumpLogin }: {
         <div className="flex min-w-0 items-start justify-between gap-4">
           <div className={cn('flex min-w-0 flex-1 items-center gap-3', !bot.enabled && 'opacity-50')}>
             <div className="relative shrink-0">
-              {official && rt?.avatar ? <img src={rt.avatar} alt="" className="h-10 w-10 rounded-full object-cover" />
-                : <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-                    <PlatformIcon type={official ? 'official' : 'onebot'} className="h-5 w-5" />
-                  </div>}
+              <BotAvatar src={official ? rt?.avatar : undefined} uin={official ? (rt?.robot_uin || rt?.self_id) : undefined} type={official ? 'official' : 'onebot'} className="h-10 w-10" />
               <span className="absolute -bottom-0.5 -right-0.5"><StatusDot tone={state.tone} /></span>
             </div>
             <div className="min-w-0 flex-1">

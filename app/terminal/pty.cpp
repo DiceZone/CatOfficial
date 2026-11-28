@@ -233,6 +233,28 @@ std::unique_ptr<Pty> Pty::start(const PtyOptions& options, std::string& error) {
         }
         ::setenv("TERM", "xterm-256color", 1);
         for (const auto& [key, value] : options.env) ::setenv(key.c_str(), value.c_str(), 1);
+#ifdef __ANDROID__
+        auto prependLib = [](const std::string& dir) {
+            if (dir.empty()) return;
+            const char* old = std::getenv("LD_LIBRARY_PATH");
+            std::string next = dir;
+            if (old && *old) { next += ':'; next += old; }
+            ::setenv("LD_LIBRARY_PATH", next.c_str(), 1);
+        };
+        if (const char* home = std::getenv("HOME"); home && *home) prependLib(std::string(home) + "/lib");
+        prependLib(".");
+        prependLib("./lib");
+        if (const char* libdir = std::getenv("CATOFFICIAL_LIBDIR"); libdir && *libdir) prependLib(libdir);
+        // 子进程 exec 用户 ELF 时走 linker64（见 android_execwrap.c）。不要设在主进程上，免得影响 ART。
+        if (const char* wrap = std::getenv("CATOFFICIAL_EXECWRAP"); wrap && *wrap) {
+            if (const char* old = std::getenv("LD_PRELOAD"); old && *old) {
+                std::string next = std::string(wrap) + ":" + old;
+                ::setenv("LD_PRELOAD", next.c_str(), 1);
+            } else {
+                ::setenv("LD_PRELOAD", wrap, 1);
+            }
+        }
+#endif
         std::vector<char*> argv;
         for (const auto& arg : options.argv) argv.push_back(const_cast<char*>(arg.c_str()));
         argv.push_back(nullptr);

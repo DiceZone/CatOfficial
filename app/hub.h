@@ -105,6 +105,18 @@ public:
         return it == legacies_.end() ? nullptr : it->second;
     }
 
+    /// 扫码绑定完成后私聊扫码用户，并在机器人上线后发出。
+    void greetBinder(const std::string& botId, const std::string& openId) {
+        if (botId.empty() || openId.empty()) return;
+        {
+            std::lock_guard lock(greetMu_);
+            for (const auto& g : pendingGreets_) if (g.botId == botId && g.openId == openId) return;
+            pendingGreets_.push_back({botId, openId});
+        }
+        say(LogLevel::info, "扫码用户 OpenID " + openId + "（机器人 " + botId + "）");
+        if (auto r = relay(botId); r && r->bot()->online()) scheduleBinderGreet(botId);
+    }
+
     /// 连接服务的官方机器人（按配置顺序）。
     std::vector<std::shared_ptr<Relay>> relaysFor(const ConnectionConfig& conn) const {
         std::vector<std::shared_ptr<Relay>> out;
@@ -404,6 +416,10 @@ private:
             return self->customReply(relay, e);
         };
         hooks.images = [](const std::vector<std::string>& urls) { ImageCache::get().enqueue(urls); };
+        hooks.state = [weak, id](bool online, const std::string&) {
+            if (!online) return;
+            if (auto self = weak.lock()) self->scheduleBinderGreet(id);
+        };
         return hooks;
     }
 
@@ -486,6 +502,32 @@ private:
         }
     }
 
+    struct PendingGreet { std::string botId, openId; };
+    void scheduleBinderGreet(const std::string& botId) {
+        std::weak_ptr<Hub> weak = weak_from_this();
+        drogon::app().getLoop()->runAfter(2.0, [weak, botId] { if (auto self = weak.lock()) self->flushBinderGreet(botId); });
+    }
+    void flushBinderGreet(const std::string& botId) {
+        std::vector<PendingGreet> due;
+        {
+            std::lock_guard lock(greetMu_);
+            for (auto it = pendingGreets_.begin(); it != pendingGreets_.end();)
+                if (it->botId == botId) { due.push_back(*it); it = pendingGreets_.erase(it); } else ++it;
+        }
+        auto r = relay(botId);
+        if (!r || !r->bot()->online()) {
+            if (!due.empty()) {
+                std::lock_guard lock(greetMu_);
+                pendingGreets_.insert(pendingGreets_.end(), due.begin(), due.end());
+            }
+            return;
+        }
+        const std::string text = "CatOfficial：机器人已创建成功。请返回 App 或网页继续操作。";
+        for (const auto& g : due) r->sendPrivateText(g.openId, text);
+    }
+
+    std::mutex greetMu_;
+    std::vector<PendingGreet> pendingGreets_;
     std::mutex errMu_;
     std::vector<std::string> pendingErrors_;
     bool flushScheduled_ = false;

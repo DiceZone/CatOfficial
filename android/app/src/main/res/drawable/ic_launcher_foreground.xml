@@ -2,9 +2,38 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="256"
-    android:viewportHeight="256">
-    <path
-        android:fillColor="#42B6EE"
-        android:pathData="M39,104 L40,61 Q40,51 49,56 L79,74 Q96,69 113,74 L139,50 Q146,44 149,54 L158,95 Q167,108 167,122 Q167,139 157,150 Q168,164 168,181 C168,195 158,204 143,204 H72 C63,204 58,200 58,194 C58,189 62,185 68,183 Q67,176 69,170 C47,165 33,149 33,130 Q33,116 39,104 Z M60,119 A5.5,5.5 0 0,1 71,119 V124 A5.5,5.5 0 0,1 60,124 Z M108,116 A5.5,5.5 0 0,1 119,116 V121 A5.5,5.5 0 0,1 108,121 Z" />
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 原 logo 画在 256 画布上；缩到自适应图标安全区（中心约 72）里略留边。 -->
+    <group android:translateX="54" android:translateY="54">
+        <group android:scaleX="0.33" android:scaleY="0.33">
+            <group android:translateX="-128" android:translateY="-128">
+                <path
+                    android:fillColor="@android:color/transparent"
+                    android:pathData="M137,182c16,5 34,2 46,-9 13,-12 16,-29 15,-51"
+                    android:strokeWidth="16"
+                    android:strokeColor="@color/ic_launcher_foreground"
+                    android:strokeLineCap="round"
+                    android:strokeLineJoin="round" />
+                <group
+                    android:pivotX="199"
+                    android:pivotY="117"
+                    android:rotation="12">
+                    <path
+                        android:fillColor="@color/ic_launcher_foreground"
+                        android:pathData="M188,79h0a4,4 0,0 1,4 4v17a4,4 0,0 1,-4 4h0a4,4 0,0 1,-4 -4v-17a4,4 0,0 1,4 -4z" />
+                    <path
+                        android:fillColor="@color/ic_launcher_foreground"
+                        android:pathData="M209,79h0a4,4 0,0 1,4 4v17a4,4 0,0 1,-4 4h0a4,4 0,0 1,-4 -4v-17a4,4 0,0 1,4 -4z" />
+                    <path
+                        android:fillColor="@color/ic_launcher_foreground"
+                        android:pathData="M184,95h29a5,5 0,0 1,5 5v8c0,13 -8,21 -19,21s-20,-8 -20,-21v-8a5,5 0,0 1,5 -5z" />
+                </group>
+                <path
+                    android:fillColor="@color/ic_launcher_foreground"
+                    android:fillType="evenOdd"
+                    android:pathData="M39,104 L40,61 q0,-10 9,-5 l30,18 q17,-5 34,0 l26,-24 q7,-6 10,4 l9,41 q9,13 9,27 0,17 -10,28 11,14 11,31 c0,14 -10,23 -25,23 H72 c-9,0 -14,-4 -14,-10 0,-5 4,-9 10,-11 q-1,-7 1,-13 c-22,-5 -36,-21 -36,-40 q0,-14 6,-26 z M60,119 a5.5,5.5 0,0 1,11 0 v5 a5.5,5.5 0,0 1,-11 0 z M108,116 a5.5,5.5 0,0 1,11 0 v5 a5.5,5.5 0,0 1,-11 0 z" />
+            </group>
+        </group>
+    </group>
 </vector>

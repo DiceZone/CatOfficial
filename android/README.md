@@ -6,10 +6,10 @@
 
 - **界面**：与桌面版同一套 WebUI。登录、机器人、连接、聊天、程序托管都在应用内操作。
 - **程序托管**：子进程挂在前台服务上，锁屏后也会继续跑。启动命令由 `/system/bin/sh -c` 执行，工作目录在应用私有空间（`filesDir/data/instances/…`）。
-  - 只能跑 **ARM64 Linux** 可执行文件或 `sh` 脚本，例如 `./dice-next`、`sh start.sh`。
-  - **不能**跑 Windows 的 `.exe`，也不能直接跑 x86/x64 的 NapCat。
-  - 从压缩包导入实例目录后，会自动给 ELF 和 `#!` 脚本加上执行权限（zip 常常丢掉 `+x`；Android 上没有它就启动不了）。
-  - 可执行文件必须放在应用私有目录里（可执行分区）。不要指望从 Download/`/sdcard` 直接 `exec`。
+  - 只能跑 **Android NDK 编出来的 ARM64 可执行文件**（bionic / `libc++`）、**完全静态链接**的 ARM64 程序，或 `sh` 脚本。
+  - **不能**跑 Windows 的 `.exe`，也不能直接跑 GNU/Linux 发行版程序（它们依赖 `libstdc++.so.6` / `glibc`，Android 里没有）。官方 Dice!Next 安卓版是独立 APK（`libdice-next.so`），不能把 Linux 的 `dice-next` 丢进托管。
+  - 从压缩包导入实例目录后，会自动给 ELF 和 `#!` 脚本加上执行权限（zip 常常丢掉 `+x`）。
+  - Android 10 起不能从应用数据目录直接 `exec`；CatOfficial 会经系统 `linker64` 加载 PIE ELF。可执行文件仍须放在应用私有目录，不要从 Download/`/sdcard` 直接执行。
 - **在线更新**：Android 上视为容器模式，只提示新版本，不在应用内替换 `.so`。请安装新的 APK。
 - **系统托盘**：没有。用通知栏常驻。
 
@@ -40,6 +40,6 @@ vcpkg 第一次编 Drogon 给 Android 会比较久。
 ## 使用程序托管
 
 1. 打开应用，等面板加载即可进入（本机 WebView 不需要面板密码）。
-2. 「程序托管」→「添加程序」。启动命令写成实例目录里的 Linux 二进制，例如 `./catofficial-core` 或 `sh start.sh`。
-3. 把 ARM64 程序放进该实例目录（面板「文件管理」或「导入压缩包」）。
+2. 「程序托管」→「添加程序」。启动命令写成实例目录里的 NDK/静态 ARM64 二进制，例如 `./program` 或 `sh start.sh`。
+3. 把该 ARM64 程序放进实例目录（面板「文件管理」或「导入压缩包」）。
 4. 建议在系统设置里关掉对该应用的电池优化，否则厂商 ROM 可能在后台杀掉前台服务和托管进程。

@@ -11,8 +11,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.PowerManager
-import android.util.Base64
+import android.provider.MediaStore
 import android.provider.Settings
+import android.util.Base64
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -26,7 +27,9 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -44,8 +47,78 @@ class MainActivity : AppCompatActivity() {
     private var insetScript = ""
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        deliverFiles(uris)
+    }
+    private val pickFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        deliverFiles(if (uri != null) listOf(uri) else emptyList())
+    }
+    private val pickImage = registerForActivityResult(PickVisualMedia()) { uri ->
+        deliverFiles(if (uri != null) listOf(uri) else emptyList())
+    }
+    private val pickImages = registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        deliverFiles(uris)
+    }
+    private val pickGallery = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data
+        val uris = ArrayList<Uri>()
+        val clip = data?.clipData
+        if (clip != null) {
+            for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let(uris::add)
+        } else {
+            data?.data?.let(uris::add)
+        }
+        deliverFiles(uris)
+    }
+
+    private fun deliverFiles(uris: List<Uri>) {
         fileCallback?.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
         fileCallback = null
+    }
+
+    private fun mimeTypes(params: WebChromeClient.FileChooserParams?): Array<String> {
+        val types = params?.acceptTypes.orEmpty()
+            .flatMap { it.split(',', ';') }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { t ->
+                when (t.lowercase()) {
+                    ".png" -> "image/png"
+                    ".jpg", ".jpeg" -> "image/jpeg"
+                    ".gif" -> "image/gif"
+                    ".webp" -> "image/webp"
+                    ".zip" -> "application/zip"
+                    ".gz", ".tgz", ".tar.gz" -> "application/gzip"
+                    else -> t
+                }
+            }
+            .distinct()
+        return if (types.isEmpty()) arrayOf("*/*") else types.toTypedArray()
+    }
+
+    private fun isImageOnly(types: Array<String>): Boolean =
+        types.isNotEmpty() && types.none { it == "*/*" } && types.all { it.startsWith("image/") }
+
+    private fun launchImagePicker(multiple: Boolean) {
+        if (PickVisualMedia.isPhotoPickerAvailable(this)) {
+            val request = PickVisualMediaRequest(PickVisualMedia.ImageOnly)
+            if (multiple) pickImages.launch(request) else pickImage.launch(request)
+            return
+        }
+        val pick = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
+            type = "image/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple)
+        }
+        try {
+            pickGallery.launch(pick)
+        } catch (_: Exception) {
+            pickGallery.launch(
+                Intent(Intent.ACTION_GET_CONTENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "image/*"
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple)
+                },
+            )
+        }
     }
 
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -107,8 +180,18 @@ class MainActivity : AppCompatActivity() {
                 ): Boolean {
                     fileCallback?.onReceiveValue(null)
                     fileCallback = callback
-                    pickFiles.launch(arrayOf("*/*"))
-                    return true
+                    val types = mimeTypes(params)
+                    val multiple = params?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+                    return try {
+                        if (isImageOnly(types)) launchImagePicker(multiple) else {
+                            if (multiple) pickFiles.launch(types) else pickFile.launch(types)
+                        }
+                        true
+                    } catch (_: Exception) {
+                        fileCallback?.onReceiveValue(null)
+                        fileCallback = null
+                        false
+                    }
                 }
             }
             setDownloadListener { url, userAgent, contentDisposition, mime, _ ->
