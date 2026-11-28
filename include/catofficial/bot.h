@@ -91,7 +91,7 @@ public:
     /// 调用任意开放平台接口，结果见 api::checkedResponse。
     void call(drogon::HttpMethod method, const std::string& path, const json& body, api::Callback cb, double timeout = 0.0) {
         if (accessToken().empty()) { cb(api::result(false, 0, "尚未取得 AccessToken")); return; }
-        api::call(api::httpsClient(api::kHost), method, path, body, accessToken(), std::move(cb), timeout, logger(""));
+        api::call(method, path, body, accessToken(), std::move(cb), timeout, logger(""));
     }
 
     webhook::Reply acceptWebhook(const std::string& timestamp, const std::string& signature, const std::string& raw) {
@@ -299,9 +299,12 @@ private:
                 std::lock_guard lock(self->mu_);
                 if (!profile->id.empty()) self->selfId_ = profile->id;
                 self->username_ = profile->username;
-                self->avatar_ = profile->avatar;
+                auto avatar = profile->avatar;
+                if (avatar.find("://") == std::string::npos) avatar.clear();
                 const auto uin = api::robotUin(profile->shareUrl);
                 if (!uin.empty()) self->robotUin_ = uin;
+                if (avatar.empty() && !self->robotUin_.empty()) avatar = api::qqPortrait(self->robotUin_);
+                self->avatar_ = std::move(avatar);
             } else {
                 self->say(LogLevel::warn, error.empty() ? "获取机器人资料失败，将尝试生成分享链接" : "解析机器人资料失败：" + error);
             }
@@ -314,7 +317,11 @@ private:
         api::generateShareUrl(client, accessToken(), "catofficial", [weak](std::string url, std::string error) {
             auto self = weak.lock(); if (!self || self->stopping_) return;
             const auto uin = api::robotUin(url);
-            if (!uin.empty()) { std::lock_guard lock(self->mu_); self->robotUin_ = uin; }
+            if (!uin.empty()) {
+                std::lock_guard lock(self->mu_);
+                self->robotUin_ = uin;
+                if (self->avatar_.empty()) self->avatar_ = api::qqPortrait(uin);
+            }
             else self->say(LogLevel::warn, error.empty() ? "生成机器人分享链接失败，机器人 QQ 号未知" : "解析机器人分享链接失败：" + error);
             self->connect();
         });

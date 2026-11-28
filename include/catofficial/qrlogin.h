@@ -24,7 +24,7 @@ using json = nlohmann::json;
 
 struct Result {
     bool ok = false;
-    json data;          // begin：{sessionId, url}；poll：{status: pending|expired|completed, appId?, appSecret?}
+    json data;          // begin：{sessionId, url}；poll：{status: pending|expired|completed, appId?, appSecret?, userOpenId?}
     std::string error;
 };
 using Callback = std::function<void(Result)>;
@@ -85,14 +85,13 @@ inline drogon::HttpRequestPtr request(const std::string& path, const json& body,
 inline void begin(const std::string& source, Callback cb) {
     std::string key(32, '\0');
     if (RAND_bytes(reinterpret_cast<unsigned char*>(key.data()), 32) != 1) { cb({false, {}, "无法生成扫码密钥"}); return; }
-    auto client = api::httpsClient("q.qq.com");
-    if (!client) { cb({false, {}, "无法解析 q.qq.com"}); return; }
     // 先建好请求再把 key 移进回调：函数实参的求值顺序不确定，写在同一个调用里 key 可能已被移走。
     auto req = detail::request("/lite/create_bind_task", json{{"key", drogon::utils::base64Encode(key)}}, source + "-QQBot/1.0");
-    client->sendRequest(req,
+    api::httpsSend("q.qq.com", req,
         [key = std::move(key), source, cb = std::move(cb)](drogon::ReqResult r, const drogon::HttpResponsePtr& resp) mutable {
             try {
-                if (r != drogon::ReqResult::Ok || !resp) throw std::runtime_error("创建扫码任务失败（网络请求未完成）");
+                if (r != drogon::ReqResult::Ok || !resp)
+                    throw std::runtime_error("创建扫码任务失败（" + api::httpsFailure(r) + "）");
                 if (resp->statusCode() >= 300)
                     throw std::runtime_error("创建扫码任务失败（QQ 服务返回 HTTP " + std::to_string(static_cast<int>(resp->statusCode())) + "）");
                 const auto j = json::parse(resp->body());
@@ -121,13 +120,12 @@ inline void poll(const std::string& sid, const std::string& source, Callback cb)
         if (it == detail::sessions().end()) { cb({false, {}, "扫码会话不存在或已过期"}); return; }
         session = it->second;
     }
-    auto client = api::httpsClient("q.qq.com");
-    if (!client) { cb({false, {}, "无法解析 q.qq.com"}); return; }
     auto req = detail::request("/lite/poll_bind_result", json{{"task_id", session.taskId}}, source + "-QQBot/1.0");
-    client->sendRequest(req,
+    api::httpsSend("q.qq.com", req,
         [sid, session = std::move(session), cb = std::move(cb)](drogon::ReqResult r, const drogon::HttpResponsePtr& resp) mutable {
             try {
-                if (r != drogon::ReqResult::Ok || !resp) throw std::runtime_error("查询扫码状态失败（网络请求未完成）");
+                if (r != drogon::ReqResult::Ok || !resp)
+                    throw std::runtime_error("查询扫码状态失败（" + api::httpsFailure(r) + "）");
                 if (resp->statusCode() >= 300)
                     throw std::runtime_error("查询扫码状态失败（QQ 服务返回 HTTP " + std::to_string(static_cast<int>(resp->statusCode())) + "）");
                 const auto j = json::parse(resp->body());
@@ -142,8 +140,15 @@ inline void poll(const std::string& sid, const std::string& source, Callback cb)
                 if (status != 2) { cb({true, {{"status", "pending"}}, {}}); return; }
                 const auto secret = detail::decrypt(d.value("bot_encrypt_secret", std::string()), session.key);
                 if (secret.empty()) throw std::runtime_error("扫码凭据解密失败");
+                std::string userOpenId;
+                for (const char* key : {"user_openid", "userOpenid", "openid"}) {
+                    if (!d.contains(key)) continue;
+                    if (d[key].is_string()) userOpenId = d[key].get<std::string>();
+                    else if (d[key].is_number_integer() || d[key].is_number_unsigned()) userOpenId = d[key].dump();
+                    if (!userOpenId.empty()) break;
+                }
                 { std::lock_guard lock(detail::mutex()); detail::sessions().erase(sid); }
-                cb({true, {{"status", "completed"}, {"appId", d.value("bot_appid", std::string())}, {"appSecret", secret}}, {}});
+                cb({true, {{"status", "completed"}, {"appId", d.value("bot_appid", std::string())}, {"appSecret", secret}, {"userOpenId", userOpenId}}, {}});
             } catch (const std::exception& e) { cb({false, {}, e.what()}); }
         });
 }

@@ -27,6 +27,8 @@
 #include <sys/socket.h>
 #endif
 
+#include "https.h"
+
 namespace catofficial::api {
 using json = nlohmann::json;
 
@@ -44,7 +46,7 @@ inline std::string resolveIpv4(const std::string& host) {
     return result ? std::string(result) : std::string();
 }
 
-/// 连到已解析 IP 的 HTTPS 客户端；请求须自行带 Host 头。解析失败返回空。
+/// 连到已解析 IP 的 Drogon HTTPS 客户端（无 SNI）。QQ 出站请用 httpsSend。
 inline drogon::HttpClientPtr httpsClient(const std::string& host) {
     const auto ip = resolveIpv4(host);
     return ip.empty() ? nullptr : drogon::HttpClient::newHttpClient(ip, 443, true);
@@ -137,10 +139,9 @@ inline const char* methodName(drogon::HttpMethod method) {
 /// 回调收到 checkedResponse() 的结果；请求没有完成时 ok=false、httpStatus=0。
 /// 平台的「无权限」错误记为 debug（不少接口只对内邀或白名单应用开放，普通应用每次
 /// 调用都会稳定返回，这是平台权限而非故障），其余失败记为 warn。
-inline void call(const drogon::HttpClientPtr& client, drogon::HttpMethod method, const std::string& path,
+inline void call(drogon::HttpMethod method, const std::string& path,
                  const json& body, const std::string& accessToken, Callback cb,
                  double timeoutSeconds = 0.0, Logger log = {}) {
-    if (!client) { cb(result(false, 0, std::string("无法解析 ") + kHost)); return; }
     auto request = drogon::HttpRequest::newHttpRequest();
     request->setMethod(method);
     if (method == drogon::Get) {
@@ -155,11 +156,11 @@ inline void call(const drogon::HttpClientPtr& client, drogon::HttpMethod method,
     request->setContentTypeCode(drogon::CT_APPLICATION_JSON);
     request->addHeader("Host", kHost);
     request->addHeader("Authorization", "QQBot " + accessToken);
-    client->sendRequest(request, [method, path, cb = std::move(cb), log = std::move(log)](
+    httpsSend(kHost, request, [method, path, cb = std::move(cb), log = std::move(log)](
         drogon::ReqResult outcome, const drogon::HttpResponsePtr& response) mutable {
         if (outcome != drogon::ReqResult::Ok || !response) {
-            const std::string message = "QQ 官方接口请求未完成: " + path;
-            if (log) log(LogLevel::warn, message + " (" + drogon::to_string(outcome) + ")");
+            const std::string message = "QQ 官方接口请求未完成: " + path + "（" + httpsFailure(outcome) + "）";
+            if (log) log(LogLevel::warn, message);
             cb(result(false, 0, message));
             return;
         }
@@ -187,12 +188,12 @@ struct BotProfile {
 /// GET /users/@me。请求失败时 profile 与 error 都为空；应答无法解析时 error 为原因。
 inline void fetchProfile(const drogon::HttpClientPtr& client, const std::string& accessToken,
                          std::function<void(std::optional<BotProfile> profile, std::string error)> done) {
-    if (!client) { done(std::nullopt, {}); return; }
+    (void)client;
     auto request = drogon::HttpRequest::newHttpRequest();
     request->setPath("/users/@me");
     request->addHeader("Host", kHost);
     request->addHeader("Authorization", "QQBot " + accessToken);
-    client->sendRequest(request, [done = std::move(done)](drogon::ReqResult outcome, const drogon::HttpResponsePtr& response) {
+    httpsSend(kHost, request, [done = std::move(done)](drogon::ReqResult outcome, const drogon::HttpResponsePtr& response) {
         if (outcome != drogon::ReqResult::Ok || !response || response->statusCode() >= 300) { done(std::nullopt, {}); return; }
         BotProfile profile;
         try {
@@ -214,7 +215,7 @@ inline void fetchProfile(const drogon::HttpClientPtr& client, const std::string&
 inline void generateShareUrl(const drogon::HttpClientPtr& client, const std::string& accessToken,
                              const std::string& callbackData,
                              std::function<void(std::string url, std::string error)> done) {
-    if (!client) { done({}, {}); return; }
+    (void)client;
     auto request = drogon::HttpRequest::newHttpRequest();
     request->setMethod(drogon::Post);
     request->setPath("/v2/generate_url_link");
@@ -222,7 +223,7 @@ inline void generateShareUrl(const drogon::HttpClientPtr& client, const std::str
     request->addHeader("Host", kHost);
     request->addHeader("Authorization", "QQBot " + accessToken);
     request->setBody(json{{"callback_data", callbackData}}.dump());
-    client->sendRequest(request, [done = std::move(done)](drogon::ReqResult outcome, const drogon::HttpResponsePtr& response) {
+    httpsSend(kHost, request, [done = std::move(done)](drogon::ReqResult outcome, const drogon::HttpResponsePtr& response) {
         if (outcome != drogon::ReqResult::Ok || !response || response->statusCode() >= 300) { done({}, {}); return; }
         std::string url;
         try {
@@ -238,5 +239,12 @@ inline void generateShareUrl(const drogon::HttpClientPtr& client, const std::str
 
 /// 分享链接里的机器人 QQ 号（robot_uin）；没有时为空。
 inline std::string robotUin(const std::string& shareUrl) { return queryValue(shareUrl, "robot_uin"); }
+
+/// 普通 QQ 头像（填真实 QQ 号）。机器人资料里的 avatar / qqapp+BotID 经常 404，这条和官民绑定后的用户/群头像同一套 CDN。
+inline std::string qqPortrait(const std::string& uin, int size = 100) {
+    if (uin.empty() || uin.find_first_not_of("0123456789") != std::string::npos) return {};
+    if (size != 40 && size != 100 && size != 140 && size != 640) size = 100;
+    return "https://q.qlogo.cn/g?b=qq&nk=" + uin + "&s=" + std::to_string(size);
+}
 
 }  // namespace catofficial::api
